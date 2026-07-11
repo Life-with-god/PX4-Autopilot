@@ -97,6 +97,29 @@ MulticopterRateControl::parameters_updated()
 				  radians(_param_mc_acro_y_max.get()));
 
 	_output_lpf_yaw.setCutoffFreq(_param_mc_yaw_tq_cutoff.get());
+	_mc_rate_method = _param_mc_rate_method.get();
+
+	_rate_ladrc.ratex.td.set_td_ratio_frequency(_param_adrc_roll_td_xi.get(), _param_adrc_roll_td_freq.get());
+	_rate_ladrc.ratex.ec.set_error_combiner_coef(_param_adrc_roll_err_gain1.get(), _param_adrc_roll_err_gain2.get());
+	_rate_ladrc.ratex.eso.set_disturb_limit(-_param_adrc_roll_disturb_max.get(), _param_adrc_roll_disturb_max.get());
+	_rate_ladrc.ratex.ec.set_distrub_gain(_param_adrc_roll_disturb_gain.get());
+	_rate_ladrc.ratex.ec.set_output_limit(-_param_adrc_roll_output_max.get(), _param_adrc_roll_output_max.get());
+	_rate_ladrc.ratex.eso.set_eso_gain_cutoff_frequency(_param_adrc_roll_eso_gain.get(), _param_adrc_roll_eso_bw.get());
+
+	_rate_ladrc.ratey.td.set_td_ratio_frequency(_param_adrc_pitch_td_xi.get(), _param_adrc_pitch_td_freq.get());
+	_rate_ladrc.ratey.ec.set_error_combiner_coef(_param_adrc_pitch_err_gain1.get(), _param_adrc_pitch_err_gain2.get());
+	_rate_ladrc.ratey.eso.set_disturb_limit(-_param_adrc_pitch_disturb_max.get(), _param_adrc_pitch_disturb_max.get());
+	_rate_ladrc.ratey.ec.set_distrub_gain(_param_adrc_pitch_disturb_gain.get());
+	_rate_ladrc.ratey.ec.set_output_limit(-_param_adrc_pitch_output_max.get(), _param_adrc_pitch_output_max.get());
+	_rate_ladrc.ratey.eso.set_eso_gain_cutoff_frequency(_param_adrc_pitch_eso_gain.get(), _param_adrc_pitch_eso_bw.get());
+
+	_rate_ladrc.ratez.td.set_td_ratio_frequency(_param_adrc_yaw_td_xi.get(), _param_adrc_yaw_td_freq.get());
+	_rate_ladrc.ratez.ec.set_error_combiner_coef(_param_adrc_yaw_err_gain1.get(), _param_adrc_yaw_err_gain2.get());
+	_rate_ladrc.ratez.eso.set_disturb_limit(-_param_adrc_yaw_disturb_max.get(), _param_adrc_yaw_disturb_max.get());
+	_rate_ladrc.ratez.ec.set_distrub_gain(_param_adrc_yaw_disturb_gain.get());
+	_rate_ladrc.ratez.ec.set_output_limit(-_param_adrc_yaw_output_max.get(), _param_adrc_yaw_output_max.get());
+	_rate_ladrc.ratez.eso.set_eso_gain_cutoff_frequency(_param_adrc_yaw_eso_gain.get(), _param_adrc_yaw_eso_bw.get());
+
 }
 
 void
@@ -196,7 +219,8 @@ MulticopterRateControl::Run()
 			// update saturation status from control allocation feedback
 			control_allocator_status_s control_allocator_status;
 
-			if (_control_allocator_status_sub.update(&control_allocator_status)) {
+			if (_control_allocator_status_sub.update(&control_allocator_status))
+			{
 				Vector<bool, 3> saturation_positive;
 				Vector<bool, 3> saturation_negative;
 
@@ -214,6 +238,13 @@ MulticopterRateControl::Run()
 				// TODO: send the unallocated value directly for better anti-windup
 				_rate_control.setSaturationStatus(saturation_positive, saturation_negative);
 			}
+			Vector3f rate_control;
+			if (_mc_rate_method == RATE_METHOD_LADRC) {
+				rate_control = _rate_ladrc.update(rates, _rates_sp, dt, _maybe_landed || _landed);
+			} else {
+//				_rate_ladrc.update(rates, _rates_sp, dt, _maybe_landed || _landed);
+				rate_control = _rate_control.update(rates, _rates_sp, angular_accel, dt, _maybe_landed || _landed);
+			}
 
 			// run rate controller
 			Vector3f torque_setpoint =
@@ -227,6 +258,14 @@ MulticopterRateControl::Run()
 			_rate_control.getRateControlStatus(rate_ctrl_status);
 			rate_ctrl_status.timestamp = hrt_absolute_time();
 			_controller_status_pub.publish(rate_ctrl_status);
+
+			ladrc_status_s ratex_status, ratey_status, ratez_status;
+			_rate_ladrc.record_rateloop_ladrc_status(ratex_status, ratey_status, ratez_status);
+
+			_ratex_ladrc_status_pub.publish(ratex_status);
+			_ratey_ladrc_status_pub.publish(ratey_status);
+			_ratez_ladrc_status_pub.publish(ratez_status);
+
 
 			// publish thrust and torque setpoints
 			vehicle_thrust_setpoint_s vehicle_thrust_setpoint{};

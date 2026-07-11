@@ -32,6 +32,7 @@
 ############################################################################
 
 add_subdirectory(AttitudeControl)
+add_subdirectory(SO3Control)
 
 px4_add_module(
 	MODULE modules__mc_att_control
@@ -43,6 +44,7 @@ px4_add_module(
 		mc_att_control.hpp
 	DEPENDS
 		AttitudeControl
+		SO3Control
 		mathlib
 		px4_work_queue
 		StickYaw
