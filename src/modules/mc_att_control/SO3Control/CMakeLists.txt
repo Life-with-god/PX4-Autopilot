@@ -30,20 +30,10 @@
 # POSSIBILITY OF SUCH DAMAGE.
 #
 ############################################################################
-add_subdirectory(RateLADRC)
-px4_add_module(
-	MODULE modules__mc_rate_control
-	MAIN mc_rate_control
-	COMPILE_FLAGS
-		${MAX_CUSTOM_OPT_LEVEL}
-	SRCS
-		MulticopterRateControl.cpp
-		MulticopterRateControl.hpp
-	DEPENDS
-		circuit_breaker
-		mathlib
-		RateControl
-		RateLADRC
 
-		px4_work_queue
-	)
+px4_add_library(SO3Control
+	SO3Control.cpp
+	SO3Control.hpp
+)
+target_compile_options(SO3Control PRIVATE ${MAX_CUSTOM_OPT_LEVEL})
+target_include_directories(SO3Control PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
