@@ -240,15 +240,13 @@ MulticopterRateControl::Run()
 			}
 			Vector3f rate_control;
 			if (_mc_rate_method == RATE_METHOD_LADRC) {
-				rate_control = _rate_ladrc.update(rates, _rates_sp, dt, _maybe_landed || _landed);
+				rate_control = _rate_ladrc.update(rates, _rates_setpoint, dt, _maybe_landed || _landed);
 			} else {
-//				_rate_ladrc.update(rates, _rates_sp, dt, _maybe_landed || _landed);
-				rate_control = _rate_control.update(rates, _rates_sp, angular_accel, dt, _maybe_landed || _landed);
+				rate_control = _rate_control.update(rates, _rates_setpoint, angular_accel, dt, _maybe_landed || _landed);
 			}
 
-			// run rate controller
-			Vector3f torque_setpoint =
-				_rate_control.update(rates, _rates_setpoint, angular_accel, dt, _maybe_landed || _landed);
+			// use the selected controller output as torque setpoint
+			Vector3f torque_setpoint = rate_control;
 
 			// apply low-pass filtering on yaw axis to reduce high frequency torque caused by rotor acceleration
 			torque_setpoint(2) = _output_lpf_yaw.update(torque_setpoint(2), dt);
