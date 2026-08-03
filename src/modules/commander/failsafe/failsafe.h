@@ -163,6 +163,21 @@ private:
 		Return_mode = 3
 	};
 
+	// ============================================================
+	// LOCP (Loss-of-Control Protection) 失控保护动作枚举
+	// 定义各严重等级触发后可执行的安全动作类型
+	// ============================================================
+	enum class locp_failsafe_action : int32_t {
+		None = 0,          // 无动作
+		Warning = 1,       // 仅警告提示
+		Hold_mode = 2,     // 悬停保持（Hold mode）
+		Land_mode = 3,     // 降落（Land mode）
+		Descend_mode = 4,  // 紧急降落（Descend mode，快速下降）
+		RTL_mode = 5,      // 返航（Return to Launch）
+		Terminate = 6,     // 终止飞行（立即停桨）
+		Disarm = 7,        // 解锁/断电
+	};
+
 	static ActionOptions fromNavDllOrRclActParam(int param_value);
 
 	static ActionOptions fromGfActParam(int param_value);
@@ -174,6 +189,8 @@ private:
 	static ActionOptions fromHighWindLimitActParam(int param_value);
 	static ActionOptions fromPosLowActParam(int param_value);
 	static ActionOptions fromRemainingFlightTimeLowActParam(int param_value);
+	/** 将 LOCP 动作参数整数值转换为 ActionOptions（不允许用户接管，安全关键） */
+	static ActionOptions fromLOCPActParam(int param_value);
 
 	const int _caller_id_mode_fallback{genCallerId()};
 	bool _last_state_mode_fallback{false};
@@ -213,7 +230,12 @@ private:
 					(ParamInt<px4::params::COM_QC_ACT>) _param_com_qc_act,
 					(ParamInt<px4::params::COM_WIND_MAX_ACT>) _param_com_wind_max_act,
 					(ParamInt<px4::params::COM_FLTT_LOW_ACT>) _param_com_fltt_low_act,
-					(ParamInt<px4::params::COM_POS_LOW_ACT>) _param_com_pos_low_act
+					(ParamInt<px4::params::COM_POS_LOW_ACT>) _param_com_pos_low_act,
+					// LOCP 三级严重等级的触发动作配置参数
+					(ParamInt<px4::params::LOCP_L1_ACT>) _param_locp_l1_act,  // LEVEL_1 动作（降级降落）
+					(ParamInt<px4::params::LOCP_L2_ACT>) _param_locp_l2_act,  // LEVEL_2 动作（紧急降落）
+					(ParamInt<px4::params::LOCP_L3_ACT>) _param_locp_l3_act,  // LEVEL_3 动作（终止飞行）
+					(ParamInt<px4::params::LOCP_OBS_ACT>) _param_locp_obs_act // OBS 独立动作（默认降落）
 				       );
 
 };

@@ -106,7 +106,17 @@ public:
 	 */
 	bool modePreventsArming(uint8_t nav_state) const { return _reporter.modePreventsArming(nav_state); }
 
+	/**
+	 * failsafe_flags 访问器（可读写）
+	 *
+	 * Commander 通过此接口直接写入 LOCP 检测结果：
+	 *   locp_ard_triggered / locp_vrd_triggered / locp_prd_triggered /
+	 *   locp_cod_triggered / locp_mto_triggered / locp_severity /
+	 *   locp_level1~3 / crash_detected
+	 * 写入后由 failsafe 状态机在下一周期评估并触发保护动作。
+	 */
 	const failsafe_flags_s &failsafeFlags() const { return _failsafe_flags; }
+	failsafe_flags_s &failsafeFlags() { return _failsafe_flags; }
 
 #ifndef CONSTRAINED_FLASH
 	ExternalChecks &externalChecks() { return _external_checks; }
