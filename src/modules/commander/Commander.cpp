@@ -1853,6 +1853,32 @@ void Commander::run()
 			checkAndInformReadyForTakeoff();
 		}
 
+		// ============================================================
+		// LOCP (Loss-of-Control Protection) —— 失控保护标志位同步
+		// ============================================================
+		// 将 FailureDetector 的检测结果同步到 failsafe_flags 消息中，
+		// 供下一周期的 failsafe 状态机评估使用。
+		// locp_level1/2/3 是从 locp_severity 自动派生的布尔标志，
+		// 用于 CHECK_FAILSAFE 宏的简洁条件判断。
+		// ============================================================
+		failsafe_flags_s &locp_flags = _health_and_arming_checks.failsafeFlags();
+
+		// 各检测维度触发标志
+		locp_flags.locp_ard_triggered = _failure_detector.getLOCP_ARD();  // ARD: 姿态变化率异常
+		locp_flags.locp_vrd_triggered = _failure_detector.getLOCP_VRD();  // VRD: 速度变化率异常
+		locp_flags.locp_prd_triggered = _failure_detector.getLOCP_PRD();  // PRD: 位置变化率异常
+		locp_flags.locp_cod_triggered = _failure_detector.getLOCP_COD();  // COD: 电流异常
+		locp_flags.locp_mto_triggered = _failure_detector.getLOCP_MTO();  // MTO: MAVLink超时
+		locp_flags.locp_obs_triggered = _failure_detector.getLOCP_OBS();  // OBS: Offboard Setpoint异常
+		locp_flags.crash_detected = _failure_detector.getCrashDetected();  // 碰撞/撞击检测
+
+		// 综合严重等级及派生标志
+		uint8_t sev = _failure_detector.getLOCPSeverity();
+		locp_flags.locp_severity = sev;          // 综合严重等级 (0~3)
+		locp_flags.locp_level1 = (sev >= 1);     // 等级 >= 1: 至少一个维度触发
+		locp_flags.locp_level2 = (sev >= 2);     // 等级 >= 2: 两个维度或通信中断
+		locp_flags.locp_level3 = (sev >= 3);     // 等级 >= 3: 三个维度或致命组合
+
 		// handle commands last, as the system needs to be updated to handle them
 		handleCommandsFromModeExecutors();
 

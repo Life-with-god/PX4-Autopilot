@@ -442,6 +442,70 @@ FailsafeBase::ActionOptions Failsafe::fromRemainingFlightTimeLowActParam(int par
 	return options;
 }
 
+// ============================================================
+// LOCP 动作参数映射：将参数值转换为 failsafe 动作选项
+// ============================================================
+// LOCP 是安全关键功能，因此所有动作均不允许用户接管 (allow_user_takeover = Never)
+// 清除条件根据动作类型不同：
+//   - None/Warning: 无清除条件
+//   - Hold_mode:     模式变更或上锁后清除
+//   - Land/Descend/RTL: 上锁后清除
+//   - Terminate/Disarm: 永不自动清除
+// ============================================================
+FailsafeBase::ActionOptions Failsafe::fromLOCPActParam(int param_value)
+{
+	ActionOptions options{};
+	// LOCP 是安全关键保护：绝不允许用户接管
+	options.allow_user_takeover = UserTakeoverAllowed::Never;
+
+	switch (locp_failsafe_action(param_value)) {
+	case locp_failsafe_action::None:
+		options.action = Action::None;
+		break;
+
+	case locp_failsafe_action::Warning:
+		options.action = Action::Warn;
+		break;
+
+	case locp_failsafe_action::Hold_mode:
+		options.action = Action::Hold;
+		options.clear_condition = ClearCondition::OnModeChangeOrDisarm;
+		break;
+
+	case locp_failsafe_action::Land_mode:
+		options.action = Action::Land;
+		options.clear_condition = ClearCondition::OnDisarm;
+		break;
+
+	case locp_failsafe_action::Descend_mode:
+		options.action = Action::Descend;
+		options.clear_condition = ClearCondition::OnDisarm;
+		break;
+
+	case locp_failsafe_action::RTL_mode:
+		options.action = Action::RTL;
+		options.clear_condition = ClearCondition::OnDisarm;
+		break;
+
+	case locp_failsafe_action::Terminate:
+		options.action = Action::Terminate;
+		options.clear_condition = ClearCondition::Never;
+		break;
+
+	case locp_failsafe_action::Disarm:
+		options.action = Action::Disarm;
+		options.clear_condition = ClearCondition::Never;
+		break;
+
+	default:
+		options.action = Action::Land;
+		options.clear_condition = ClearCondition::OnDisarm;
+		break;
+	}
+
+	return options;
+}
+
 void Failsafe::checkStateAndMode(const hrt_abstime &time_us, const State &state,
 				 const failsafe_flags_s &status_flags)
 {
@@ -617,6 +681,37 @@ void Failsafe::checkStateAndMode(const hrt_abstime &time_us, const State &state,
 
 	CHECK_FAILSAFE(status_flags, fd_imbalanced_prop, fromImbalancedPropActParam(_param_com_imb_prop_act.get()));
 	CHECK_FAILSAFE(status_flags, fd_motor_failure, fromActuatorFailureActParam(_param_com_actuator_failure_act.get()));
+
+	// ============================================================
+	// LOCP (Loss-of-Control Protection) 失控保护
+	// ============================================================
+	// 根据 FailureDetector 综合评估的严重等级（0~3），
+	// 触发对应级别的安全动作。动作类型由参数 LOCP_L1_ACT/L2_ACT/L3_ACT 配置。
+	// 碰撞/撞击检测是独立的瞬时通道，触发后立即上锁。
+	// ============================================================
+
+	// LEVEL_1: 轻度异常 → 按 LOCP_L1_ACT 配置执行（默认降落）
+	CHECK_FAILSAFE(status_flags, locp_level1,
+		       fromLOCPActParam(_param_locp_l1_act.get()));
+
+	// LEVEL_2: 中度异常 → 按 LOCP_L2_ACT 配置执行（默认紧急降落）
+	CHECK_FAILSAFE(status_flags, locp_level2,
+		       fromLOCPActParam(_param_locp_l2_act.get()));
+
+	// LEVEL_3: 严重异常 → 按 LOCP_L3_ACT 配置执行（默认终止飞行）
+	CHECK_FAILSAFE(status_flags, locp_level3,
+		       fromLOCPActParam(_param_locp_l3_act.get()));
+
+	// 碰撞/撞击瞬时检测 → 立即上锁，不可延迟，不允许用户接管
+	CHECK_FAILSAFE(status_flags, crash_detected,
+		       ActionOptions(Action::Disarm).cannotBeDeferred().allowUserTakeover(UserTakeoverAllowed::Never));
+
+	// OBS: Offboard Setpoint 异常检测 → 按 LOCP_OBS_ACT 配置执行
+	// OBS 检测到 setpoint 数值跳变/NaN 注入，说明机载计算机软件异常。
+	// 动作由 LOCP_OBS_ACT 独立配置（默认降落 Land），避免单次 setpoint
+	// 异常触发过于激进的 Disarm。不允许用户接管。
+	CHECK_FAILSAFE(status_flags, locp_obs_triggered,
+		       fromLOCPActParam(_param_locp_obs_act.get()));
 
 
 
