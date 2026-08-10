@@ -324,9 +324,9 @@ private:
 
 		// --- OBS (Offboard Setpoint Sanity) 机载计算机Setpoint异常检测 ---
 		(ParamBool<px4::params::LOCP_OBS_EN>) _param_locp_obs_en,           // OBS 检测使能开关
-		(ParamFloat<px4::params::LOCP_OBS_JUMP_POS>) _param_locp_obs_jump_pos, // 位置跳变阈值 (m)
-		(ParamFloat<px4::params::LOCP_OBS_JUMP_VEL>) _param_locp_obs_jump_vel, // 速度跳变阈值 (m/s)
-		(ParamFloat<px4::params::LOCP_OBS_JUMP_YAW>) _param_locp_obs_jump_yaw, // Yaw 跳变阈值 (rad)
+		(ParamFloat<px4::params::LOCP_OBS_J_POS>) _param_locp_obs_jump_pos, // 位置跳变阈值 (m)
+		(ParamFloat<px4::params::LOCP_OBS_J_VEL>) _param_locp_obs_jump_vel, // 速度跳变阈值 (m/s)
+		(ParamFloat<px4::params::LOCP_OBS_J_YAW>) _param_locp_obs_jump_yaw, // Yaw 跳变阈值 (rad)
 		(ParamFloat<px4::params::LOCP_OBS_T>) _param_locp_obs_t,            // OBS 迟滞确认时间 (秒)
 		(ParamInt<px4::params::LOCP_OBS_ACT>) _param_locp_obs_act           // OBS 触发动作（独立配置，默认降落）
 	)
