@@ -400,7 +400,13 @@ void FailureDetector::updateLOCP(const vehicle_status_s &vehicle_status,
 		_rate_window_start = 0;
 		_mavlink_msg_counter = 0;
 		_sp_was_valid = false;
+		_locp_arm_time = 0;
 		return;
+	}
+
+	// 记录解锁时刻（用于 COD 启动保护，避免解锁瞬间电流爬升误判）
+	if (_locp_arm_time == 0) {
+		_locp_arm_time = hrt_absolute_time();
 	}
 
 	// 1) ARD: 姿态变化率异常检测（角加速度尖峰 + 持续高角速率）
@@ -422,11 +428,16 @@ void FailureDetector::updateLOCP(const vehicle_status_s &vehicle_status,
 	}
 
 	// 4) COD: 电流异常检测（总电流突增/dI/dt尖峰/单路ESC过流）
+	// 启动保护：解锁后 LOCP_COD_ARM_DELAY 秒内跳过 COD
+	// （电机启动瞬间电流从 0 爬升到悬停电流是正常行为，不应触发保护）
+	const bool cod_startup_guard = (_locp_arm_time != 0)
+				      && (hrt_absolute_time() - _locp_arm_time <
+					  static_cast<hrt_abstime>(_param_locp_cod_arm_delay.get() * 1_s));
 	battery_status_s bat;
 	esc_status_s esc;
 	if (_battery_status_sub.update(&bat)) {
 		_esc_status_sub.copy(&esc);
-		_locp_cod_triggered = _param_locp_cod_en.get() && checkCurrentAnomaly(bat, esc);
+		_locp_cod_triggered = _param_locp_cod_en.get() && !cod_startup_guard && checkCurrentAnomaly(bat, esc);
 	}
 
 	// 5) MTO: MAVLink 消息超时检测（心跳超时/指令超时/消息速率骤降）
@@ -445,7 +456,10 @@ void FailureDetector::updateLOCP(const vehicle_status_s &vehicle_status,
 bool FailureDetector::checkAttitudeRateAnomaly(const vehicle_angular_velocity_s &ang_vel)
 {
 	const hrt_abstime now = hrt_absolute_time();
-	const float dt = 0.01f; // 假设更新频率为 100Hz，用于角加速度计算
+	// 使用真实时间戳间隔计算 dt，避免硬编码 100Hz 假设（角速度话题可能非 100Hz 更新）
+	float dt = (ang_vel.timestamp - _att_rate_timestamp_prev) * 1e-6f;
+	if (_att_rate_timestamp_prev == 0 || dt <= 0.f || dt > 1.f) { dt = 0.01f; }
+	_att_rate_timestamp_prev = ang_vel.timestamp;
 
 	// --- 角加速度检测：三轴角加速度分别与阈值比较 ---
 	// 通过前后两帧角速度差分计算角加速度 (rad/s²)
@@ -545,7 +559,10 @@ bool FailureDetector::checkVelocityRateAnomaly(const vehicle_local_position_s &l
 	// --- Jerk（加加速度）检测 ---
 	// Jerk = 水平加速度的变化率 = |Δa_horiz| / dt
 	// 检测加速度的突变（急加速或急减速）
-	float dt = 0.01f;
+	// 使用真实时间戳间隔计算 dt，避免硬编码 100Hz 假设导致误判
+	float dt = (loc.timestamp - _acc_horiz_timestamp_prev) * 1e-6f;
+	if (_acc_horiz_timestamp_prev == 0 || dt <= 0.f || dt > 1.f) { dt = 0.01f; }
+	_acc_horiz_timestamp_prev = loc.timestamp;
 	float jerk = fabsf(acc_horiz - _acc_horiz_prev) / dt;
 	bool jerk_fault = jerk > _param_locp_vrd_jerk.get();
 	_acc_horiz_prev = acc_horiz;
@@ -633,7 +650,12 @@ bool FailureDetector::checkCurrentAnomaly(const battery_status_s &bat, const esc
 	float deviation = bat.current_a - avg;
 	bool total_surge = (deviation > _param_locp_cod_delta_i.get())
 			|| (bat.current_a > _param_locp_cod_max_i.get());
-
+// 使用真实时间戳间隔计算 dt：battery_status 更新率通常不是 100Hz，
+	// 硬编码 0.01s 会把 dI/dt 放大（解锁瞬间电流爬升被误判为尖峰）
+	float dt = (bat.timestamp - _current_timestamp_prev) * 1e-6f;
+	if (_current_timestamp_prev == 0 || dt <= 0.f || dt > 1.f) { dt = 0.01f; }
+	_current_timestamp_prev = bat.timestamp;
+	float di_dt = fabsf(bat.current_a - _current_prev) / dt
 	// --- 电流变化率 (dI/dt) 尖峰检测 ---
 	// 通过前后两帧电流差分计算 dI/dt (A/s)，检测瞬间电流尖峰
 	float di_dt = fabsf(bat.current_a - _current_prev) / 0.01f;

@@ -202,11 +202,13 @@ private:
 	float _pitchspeed_prev{0.f};             // 上一帧 Pitch 角速度 (rad/s)
 	float _yawspeed_prev{0.f};               // 上一帧 Yaw 角速度 (rad/s)
 	hrt_abstime _att_rate_high_start{0};     // 持续高角速率开始时刻（用于判断是否超 LOCP_ARD_DUR）
+	hrt_abstime _att_rate_timestamp_prev{0}; // 上一帧角速度时间戳 (us)，用于计算真实角加速度 dt
 	systemlib::Hysteresis _ard_hysteresis{false}; // ARD 迟滞滤波器，防止瞬时抖动误触发
 	bool _locp_ard_triggered{false};         // ARD 检测最终触发标志
 
 	// --- VRD (Velocity Rate Detection) 速度变化率检测 ---
 	float _acc_horiz_prev{0.f};              // 上一帧水平加速度幅值 (m/s²)，用于计算 jerk
+	hrt_abstime _acc_horiz_timestamp_prev{0};// 上一帧位置时间戳 (us)，用于计算真实 jerk dt
 	hrt_abstime _vel_rate_fault_start{0};    // 速度故障开始时刻
 	systemlib::Hysteresis _vrd_hysteresis{false}; // VRD 迟滞滤波器
 	bool _locp_vrd_triggered{false};         // VRD 检测最终触发标志
@@ -222,7 +224,8 @@ private:
 	// --- COD (Current Overdraw Detection) 电流异常检测 ---
 	float _current_sliding_window[20]{};     // 电流滑动窗口（20帧），用于计算移动平均
 	uint8_t _current_window_idx{0};          // 电流窗口写入索引（环形缓冲）
-	uint8_t _current_window_count{0};        // 已累积的电流窗口有效帧数
+	uint8_t _current_windtimestamp_prev{0};  // 上一帧电流时间戳 (us)，用于计算真实 dI/dt
+	hrt_abstime _current_ow_count{0};        // 已累积的电流窗口有效帧数
 	float _current_prev{0.f};                // 上一帧总电流 (A)，用于计算 dI/dt
 	hrt_abstime _current_fault_start{0};     // 电流故障开始时刻
 	systemlib::Hysteresis _cod_hysteresis{false}; // COD 迟滞滤波器
@@ -237,6 +240,7 @@ private:
 
 	// --- LOCP 严重等级仲裁 ---
 	uint8_t _locp_severity{0};               // 综合严重等级: 0=NONE, 1=LEVEL_1(降落), 2=LEVEL_2(急降), 3=LEVEL_3(终止)
+	hrt_abstime _locp_arm_time{0};           // 解锁时刻 (us)，用于启动保护（避免解锁瞬间电流/姿态误判）
 
 	// --- Crash/Impact 碰撞/撞击检测 ---
 	float _accel_norm_prev{0.f};             // 上一帧加速度范数（保留）
@@ -307,6 +311,7 @@ private:
 		(ParamFloat<px4::params::LOCP_COD_DI_DT>) _param_locp_cod_di_dt,    // 电流变化率 dI/dt 阈值 (A/s)，尖峰判断
 		(ParamFloat<px4::params::LOCP_COD_ESC_MAX>) _param_locp_cod_esc_max,// 单路 ESC 电流绝对最大阈值 (A)
 		(ParamFloat<px4::params::LOCP_COD_T>) _param_locp_cod_t,            // COD 迟滞确认时间 (秒)
+		(ParamFloat<px4::params::LOCP_COD_ARM_DELAY>) _param_locp_cod_arm_delay, // 解锁后 COD 启动保护延迟 (秒)，期间不检测避免启动电流误判
 
 		// --- MTO (MAVLink Timeout) MAVLink 消息超时检测 ---
 		(ParamBool<px4::params::LOCP_MTO_EN>) _param_locp_mto_en,           // MTO 检测使能开关

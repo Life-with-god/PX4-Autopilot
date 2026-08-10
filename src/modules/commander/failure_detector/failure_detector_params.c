@@ -573,6 +573,22 @@ PARAM_DEFINE_FLOAT(LOCP_COD_ESC_MAX, 10.0f);
  */
 PARAM_DEFINE_FLOAT(LOCP_COD_T, 0.3f);
 
+/**
+ * LOCP COD 解锁启动保护延迟
+ *
+ * 解锁后该时长（秒）内不执行 COD 电流异常检测。
+ * 电机启动瞬间电流从 0 爬升到悬停电流是正常行为，若不屏蔽会被误判为
+ * 电流异常（dI/dt 尖峰/电流突增）而触发保护动作（如解锁后立即上锁）。
+ * 建议保持默认值，待电流滑动窗口建立后再开始检测。
+ *
+ * @min 0.0
+ * @max 10.0
+ * @unit s
+ * @decimal 1
+ * @group LOCP
+ */
+PARAM_DEFINE_FLOAT(LOCP_COD_ARM_DELAY, 2.0f);
+
 // ============================================================
 // MTO (MAVLink Timeout) —— MAVLink 消息超时检测
 // ============================================================
