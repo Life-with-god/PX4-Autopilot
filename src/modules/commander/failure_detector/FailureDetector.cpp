@@ -650,15 +650,15 @@ bool FailureDetector::checkCurrentAnomaly(const battery_status_s &bat, const esc
 	float deviation = bat.current_a - avg;
 	bool total_surge = (deviation > _param_locp_cod_delta_i.get())
 			|| (bat.current_a > _param_locp_cod_max_i.get());
-// 使用真实时间戳间隔计算 dt：battery_status 更新率通常不是 100Hz，
+
+	// --- 电流变化率 (dI/dt) 尖峰检测 ---
+	// 通过前后两帧电流差分计算 dI/dt (A/s)，检测瞬间电流尖峰
+	// 使用真实时间戳间隔计算 dt：battery_status 更新率通常不是 100Hz，
 	// 硬编码 0.01s 会把 dI/dt 放大（解锁瞬间电流爬升被误判为尖峰）
 	float dt = (bat.timestamp - _current_timestamp_prev) * 1e-6f;
 	if (_current_timestamp_prev == 0 || dt <= 0.f || dt > 1.f) { dt = 0.01f; }
 	_current_timestamp_prev = bat.timestamp;
-	float di_dt = fabsf(bat.current_a - _current_prev) / dt
-	// --- 电流变化率 (dI/dt) 尖峰检测 ---
-	// 通过前后两帧电流差分计算 dI/dt (A/s)，检测瞬间电流尖峰
-	float di_dt = fabsf(bat.current_a - _current_prev) / 0.01f;
+	float di_dt = fabsf(bat.current_a - _current_prev) / dt;
 	bool current_spike = di_dt > _param_locp_cod_di_dt.get();
 	_current_prev = bat.current_a;
 
