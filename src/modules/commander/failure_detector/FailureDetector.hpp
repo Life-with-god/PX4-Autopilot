@@ -224,9 +224,9 @@ private:
 	// --- COD (Current Overdraw Detection) 电流异常检测 ---
 	float _current_sliding_window[20]{};     // 电流滑动窗口（20帧），用于计算移动平均
 	uint8_t _current_window_idx{0};          // 电流窗口写入索引（环形缓冲）
-	uint8_t _current_windtimestamp_prev{0};  // 上一帧电流时间戳 (us)，用于计算真实 dI/dt
-	hrt_abstime _current_ow_count{0};        // 已累积的电流窗口有效帧数
+	uint8_t _current_window_count{0};        // 已累积的电流窗口有效帧数
 	float _current_prev{0.f};                // 上一帧总电流 (A)，用于计算 dI/dt
+	hrt_abstime _current_timestamp_prev{0};  // 上一帧电流时间戳 (us)，用于计算真实 dI/dt
 	hrt_abstime _current_fault_start{0};     // 电流故障开始时刻
 	systemlib::Hysteresis _cod_hysteresis{false}; // COD 迟滞滤波器
 	bool _locp_cod_triggered{false};         // COD 检测最终触发标志
