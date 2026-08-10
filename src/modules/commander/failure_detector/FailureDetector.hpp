@@ -311,7 +311,7 @@ private:
 		(ParamFloat<px4::params::LOCP_COD_DI_DT>) _param_locp_cod_di_dt,    // 电流变化率 dI/dt 阈值 (A/s)，尖峰判断
 		(ParamFloat<px4::params::LOCP_COD_ESC_MAX>) _param_locp_cod_esc_max,// 单路 ESC 电流绝对最大阈值 (A)
 		(ParamFloat<px4::params::LOCP_COD_T>) _param_locp_cod_t,            // COD 迟滞确认时间 (秒)
-		(ParamFloat<px4::params::LOCP_COD_ARM_DELAY>) _param_locp_cod_arm_delay, // 解锁后 COD 启动保护延迟 (秒)，期间不检测避免启动电流误判
+		(ParamFloat<px4::params::LOCP_COD_ARM_DLY>) _param_locp_cod_arm_dly, // 解锁后 COD 启动保护延迟 (秒)，期间不检测避免启动电流误判
 
 		// --- MTO (MAVLink Timeout) MAVLink 消息超时检测 ---
 		(ParamBool<px4::params::LOCP_MTO_EN>) _param_locp_mto_en,           // MTO 检测使能开关

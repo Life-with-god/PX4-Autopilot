@@ -587,7 +587,7 @@ PARAM_DEFINE_FLOAT(LOCP_COD_T, 0.3f);
  * @decimal 1
  * @group LOCP
  */
-PARAM_DEFINE_FLOAT(LOCP_COD_ARM_DELAY, 2.0f);
+PARAM_DEFINE_FLOAT(LOCP_COD_ARM_DLY, 2.0f);
 
 // ============================================================
 // MTO (MAVLink Timeout) —— MAVLink 消息超时检测

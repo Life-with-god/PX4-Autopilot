@@ -428,11 +428,11 @@ void FailureDetector::updateLOCP(const vehicle_status_s &vehicle_status,
 	}
 
 	// 4) COD: 电流异常检测（总电流突增/dI/dt尖峰/单路ESC过流）
-	// 启动保护：解锁后 LOCP_COD_ARM_DELAY 秒内跳过 COD
+	// 启动保护：解锁后 LOCP_COD_ARM_DLY 秒内跳过 COD
 	// （电机启动瞬间电流从 0 爬升到悬停电流是正常行为，不应触发保护）
 	const bool cod_startup_guard = (_locp_arm_time != 0)
 				      && (hrt_absolute_time() - _locp_arm_time <
-					  static_cast<hrt_abstime>(_param_locp_cod_arm_delay.get() * 1_s));
+					  static_cast<hrt_abstime>(_param_locp_cod_arm_dly.get() * 1_s));
 	battery_status_s bat;
 	esc_status_s esc;
 	if (_battery_status_sub.update(&bat)) {
