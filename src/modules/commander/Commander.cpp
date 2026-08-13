@@ -1887,8 +1887,9 @@ void Commander::run()
 		// ============================================================
 		// 将 FailureDetector 的检测结果同步到 failsafe_flags 消息中，
 		// 供下一周期的 failsafe 状态机评估使用。
-		// locp_level1/2/3 是从 locp_severity 自动派生的布尔标志，
-		// 用于 CHECK_FAILSAFE 宏的简洁条件判断。
+		// 各维度触发标志直接映射固定动作（无等级仲裁）：
+		//   ARD/VRD/PRD/COD/Crash → 停桨 (Disarm)
+		//   MTO/OBS → 降落 (Land)
 		// ============================================================
 		failsafe_flags_s &locp_flags = _health_and_arming_checks.failsafeFlags();
 
@@ -1899,14 +1900,13 @@ void Commander::run()
 		locp_flags.locp_cod_triggered = _failure_detector.getLOCP_COD();  // COD: 电流异常
 		locp_flags.locp_mto_triggered = _failure_detector.getLOCP_MTO();  // MTO: MAVLink超时
 		locp_flags.locp_obs_triggered = _failure_detector.getLOCP_OBS();  // OBS: Offboard Setpoint异常
+		// 飞机自身状态健康：MTO/OBS 降落动作的安全门槛（不受各维度EN控制）
+		// failsafe 中用 checkFailsafe() 复合判断：健康→降落 / 不健康→停桨
+		locp_flags.locp_vehicle_healthy = _failure_detector.getLOCP_VehicleHealthy();
+		locp_flags.locp_trd_triggered = _failure_detector.getLOCP_TRD();  // TRD: 动力响应异常
+		locp_flags.locp_trd_land = _failure_detector.getLOCP_TRD_RequestLand();      // TRD: 低高度请求降落
+		locp_flags.locp_trd_no_takeover = _failure_detector.getLOCP_TRD_NoTakeover(); // TRD: 接管不可用
 		locp_flags.crash_detected = _failure_detector.getCrashDetected();  // 碰撞/撞击检测
-
-		// 综合严重等级及派生标志
-		uint8_t sev = _failure_detector.getLOCPSeverity();
-		locp_flags.locp_severity = sev;          // 综合严重等级 (0~3)
-		locp_flags.locp_level1 = (sev >= 1);     // 等级 >= 1: 至少一个维度触发
-		locp_flags.locp_level2 = (sev >= 2);     // 等级 >= 2: 两个维度或通信中断
-		locp_flags.locp_level3 = (sev >= 3);     // 等级 >= 3: 三个维度或致命组合
 
 		// handle commands last, as the system needs to be updated to handle them
 		handleCommandsFromModeExecutors();

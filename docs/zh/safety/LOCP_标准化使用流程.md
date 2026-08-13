@@ -2,7 +2,7 @@
 
  第一部分：参数说明
 
-1.1 检测维度与严重等级
+1.1 检测维度与保护动作
 
 LOCP 通过 6 个独立维度检测失控：
 ───────────────────────────────────────────────────────────────────────────────
@@ -17,70 +17,108 @@ LOCP 通过 6 个独立维度检测失控：
  Crash    碰撞/撞击检测（IMU加速度尖峰）                   vehicle_acceleration
 ───────────────────────────────────────────────────────────────────────────────
 
-严重等级= 触发维度数 + 数据源折扣：
+保护动作分配（无等级，硬编码）：
 ───────────────────────────────────────────────────────────────────────────────────
- 等级      条件                                            默认动作       配置参数
+ 维度      条件                                            动作           说明
 ───────────────────────────────────────────────────────────────────────────────────
- 1         1 维触发（VRD+PRD 同时触发折扣为 1 维）          Land 降落      LOCP_L1_ACT=3
- 2         2 维触发 / MTO+任一其他异常                      Land 降落      LOCP_L2_ACT=3
- 3         3+ 维触发 / COD+ARD 致命组合                     Disarm 上锁    LOCP_L3_ACT=7
- OBS       Setpoint 跳变/NaN注入                            Land 降落      LOCP_OBS_ACT=3
- Crash     加速度范数 > 阈值                                Disarm 上锁    硬编码
+ ARD      姿态变化率异常                                   Disarm 停桨    飞机已乱飞，降落=坠机
+ VRD      速度变化率异常                                   Disarm 停桨    速度估计坏，降落会乱
+ PRD      位置变化率异常                                   Disarm 停桨    位置估计坏，无法定位
+ COD      电流异常                                         Disarm 停桨    动力不可靠
+ Crash    加速度范数 > 阈值                                Disarm 停桨    瞬时事件
+ TRD      动力响应异常（卡网）                             分级            低高度降落+接管 / 高高度停桨
+ MTO      MAVLink 超时                                    健康→Land     飞机健康才可受控降落
+                                                          不健康→Disarm
+ OBS      Setpoint 跳变/NaN注入                            健康→Land     飞机健康才可受控降落
+                                                          不健康→Disarm
 ───────────────────────────────────────────────────────────────────────────────────
+原则：降落的前提是飞机自身受控（MTO/OBS 触发时还会实时检查飞机健康，健康→降落，不健康→停桨）；自身失控一律停桨。
+
 1.2 参数表
-───────────────────────────────────────────────────────────────────────────────────────────────────
- 维度    参数                      含义                                默认值   2.7kg推荐   范围
-───────────────────────────────────────────────────────────────────────────────────────────────────
- ARD    LOCP_ARD_EN               使能开关                               1         1       0-1
- ARD    LOCP_ARD_R_MAX            Roll 角加速度上限                     80        80       20-500 rad/s²
- ARD    LOCP_ARD_P_MAX            Pitch 角加速度上限                    80        80       20-500 rad/s²
- ARD    LOCP_ARD_Y_MAX            Yaw 角加速度上限                      60        60       20-500 rad/s²
- ARD    LOCP_ARD_RSP              Roll 持续高角速率设定点                6         6       3-30 rad/s
- ARD    LOCP_ARD_PSP              Pitch 持续高角速率设定点               6         6       3-30 rad/s
- ARD    LOCP_ARD_YSP              Yaw 持续高角速率设定点                 5         5       3-30 rad/s
- ARD    LOCP_ARD_DUR              持续高角速率最短时间                  0.3       0.3      0.1-2.0 s
- ARD    LOCP_ARD_T                迟滞确认时间                          0.3       0.3      0.1-2.0 s
+────────────────────────────────────────────────────────────────────────────────────────────
+ 维度    参数                      含义                                默认值   单位
+────────────────────────────────────────────────────────────────────────────────────────────
+ 总      LOCP_EN                   LOCP 总开关                          0        —
+ ARD    LOCP_ARD_EN                ARD 使能开关                         0        —
+ ARD    LOCP_ARD_ACC_EN            角加速度尖峰检测开关                 0        —
+ ARD    LOCP_ARD_RATE_EN           持续高角速率检测开关                 0        —
+ ARD    LOCP_ARD_R_MAX            Roll 角加速度上限                    100      rad/s²
+ ARD    LOCP_ARD_P_MAX            Pitch 角加速度上限                   120      rad/s²
+ ARD    LOCP_ARD_Y_MAX            Yaw 角加速度上限                      60      rad/s²
+ ARD    LOCP_ARD_RSP              Roll 持续高角速率设定点                2       rad/s
+ ARD    LOCP_ARD_PSP              Pitch 持续高角速率设定点               2       rad/s
+ ARD    LOCP_ARD_YSP              Yaw 持续高角速率设定点                 5       rad/s
+ ARD    LOCP_ARD_DUR              持续高角速率最短时间                  0.2     s
+ ARD    LOCP_ARD_T                角加速度迟滞确认时间                  0.1     s
 
- VRD    LOCP_VRD_EN               使能开关                               1         1       0-1
- VRD    LOCP_VRD_AH_MAX           水平加速度上限                         8         8       5-50 m/s²
- VRD    LOCP_VRD_AD_MAX           垂直向下加速度阈值                     6         6       3-20 m/s²
- VRD    LOCP_VRD_VZD_MAX          垂直下降速度阈值                       3         3       1-15 m/s
- VRD    LOCP_VRD_JERK             水平 Jerk 阈值                        50        50       10-200 m/s³
- VRD    LOCP_VRD_T                迟滞确认时间                          0.3       0.3      0.1-2.0 s
+ VRD    LOCP_VRD_EN               VRD 使能开关                          0        —
+ VRD    LOCP_VRD_AH_EN            水平加速度检测开关                    0        —
+ VRD    LOCP_VRD_FF_EN            自由落体检测开关                      0        —
+ VRD    LOCP_VRD_JK_EN            Jerk 检测开关                         0        —
+ VRD    LOCP_VRD_HS_EN            水平速度持续异常开关                  0        —
+ VRD    LOCP_VRD_AH_MAX           水平加速度上限                        55      m/s²
+ VRD    LOCP_VRD_AD_MAX           垂直向下加速度阈值                     6       m/s²
+ VRD    LOCP_VRD_VZD_MAX          垂直下降速度阈值                       3       m/s
+ VRD    LOCP_VRD_JERK             水平 Jerk 阈值                       100     m/s³
+ VRD    LOCP_VRD_T                迟滞确认时间                          0.3     s
+ VRD    LOCP_VRD_HS_MAX           水平速度持续异常阈值                  15      m/s
+ VRD    LOCP_VRD_HS_DUR           水平速度持续异常最短时长              3.0     s
 
- PRD    LOCP_PRD_EN               使能开关                               1         1       0-1
- PRD    LOCP_PRD_VZ_MAX           下降速度上限                           5         5       1-20 m/s
- PRD    LOCP_PRD_ADROP            高度下降量上限                         3         3       1-50 m
- PRD    LOCP_PRD_ASTD             高度标准差上限                         2         2       0.5-10 m
- PRD    LOCP_PRD_HSPD             水平漂移速度上限                       5         5       1-30 m/s
- PRD    LOCP_PRD_T                迟滞确认时间                          0.5       0.5      0.1-2.0 s
+ PRD    LOCP_PRD_EN               PRD 使能开关                          0        —
+ PRD    LOCP_PRD_DES_EN           急降检测开关                          0        —
+ PRD    LOCP_PRD_OSC_EN           高度振荡检测开关                      0        —
+ PRD    LOCP_PRD_DRF_EN           水平漂移检测开关                      0        —
+ PRD    LOCP_PRD_VZ_MAX           下降速度上限                           5       m/s
+ PRD    LOCP_PRD_ADROP            高度下降量上限                         3       m
+ PRD    LOCP_PRD_ASTD             高度标准差上限                         2       m
+ PRD    LOCP_PRD_HSPD             水平漂移速度上限                       5       m/s
+ PRD    LOCP_PRD_T                迟滞确认时间                          0.5     s
 
- COD    LOCP_COD_EN               使能开关                               1         1       0-1
-        ⚠ 无电流传感器须设为 0
- COD    LOCP_COD_MAX_I            总电流绝对上限                        45       **40**    10-150 A
- COD    LOCP_COD_DELTA_I          电流偏离滑动均值阈值                  10       **8**     5-40 A
- COD    LOCP_COD_DI_DT            电流变化率 dI/dt 上限                 30        30       10-200 A/s
- COD    LOCP_COD_ESC_MAX          单路 ESC 电流上限                     10       **12**    5-50 A
- COD    LOCP_COD_T                迟滞确认时间                          0.3       0.3      0.1-2.0 s
+ COD    LOCP_COD_EN               COD 使能开关                          0        —
+ COD    LOCP_COD_SRG_EN           电流突增检测开关                      0        —
+ COD    LOCP_COD_SPK_EN           dI/dt 尖峰检测开关                    0        —
+ COD    LOCP_COD_MAX_I            总电流绝对上限                       100      A
+ COD    LOCP_COD_DELTA_I          电流偏离滑动均值阈值                  10      A
+ COD    LOCP_COD_DI_DT            电流变化率 dI/dt 上限                300      A/s
+ COD    LOCP_COD_T                迟滞确认时间                          0.5     s
+ COD    LOCP_COD_ARM_DLY          解锁后启动保护延迟                    2.0     s
 
- MTO    LOCP_MTO_EN               使能开关                               1         1       0-1
- MTO    LOCP_MTO_HB_T             心跳超时阈值                          1.5       1.5      0.5-10 s
- MTO    LOCP_MTO_CMD_T            指令超时阈值                          2.0       2.0      0.5-10 s
- MTO    LOCP_MTO_RATE             消息最低速率                           3         3       0.5-50 Hz
+ MTO    LOCP_MTO_EN               MTO 使能开关                          0        —
+ MTO    LOCP_MTO_HB_EN            心跳超时检测开关                      0        —
+ MTO    LOCP_MTO_CMD_EN           指令超时检测开关                      0        —
+ MTO    LOCP_MTO_HB_T             心跳超时阈值                          1.5     s
+ MTO    LOCP_MTO_CMD_T            指令超时阈值                          2.0     s
+ MTO    LOCP_MTO_RATE             消息最低速率                           3       Hz
 
- OBS    LOCP_OBS_EN               使能开关                               1         1       0-1
- OBS    LOCP_OBS_JUMP_POS         位置跳变阈值                          10        10       1-50 m
- OBS    LOCP_OBS_JUMP_VEL         速度跳变阈值                           5         5       1-20 m/s
- OBS    LOCP_OBS_JUMP_YAW         Yaw 跳变阈值                         1.57      1.57      0.5-6.28 rad
- OBS    LOCP_OBS_T                迟滞确认时间                          0.3       0.3      0.1-2.0 s
+ TRD    LOCP_TRD_EN               TRD 使能开关                          0        —
+ TRD    LOCP_TRD_THR_H            高油门判定阈值                       0.85     —
+ TRD    LOCP_TRD_T                高油门无响应确认时间                  3.0     s
+ TRD    LOCP_TRD_AZ_MIN           垂直加速度下限                        5.0     m/s²
+ TRD    LOCP_TRD_LAND_H           低高度降落阈值                        5.0     m
+ TRD    LOCP_TRD_LTOUT            降落尝试超时                          4.0     s
+ TRD    LOCP_TRD_WATCH            接管观察窗口                          3.0     s
+ TRD    LOCP_TRD_VZ_MAX           垂直速度上限（无显著升降）             1.5     m/s
+ TRD    LOCP_TRD_HS_MAX           水平速度上限（无水平移动）             2.0     m/s
+ TRD    LOCP_TRD_MIN_H            最低检测高度                          1.0     m
 
- Crash  LOCP_CRASH_THR            碰撞加速度范数阈值                    50        50       30-200 m/s²
+ HC     LOCP_HC_RATE_MAX          Roll/Pitch 角速率健康门槛             2.0     rad/s
+ HC     LOCP_HC_YAW_MAX           Yaw 角速率健康门槛                    5.0     rad/s
+ HC     LOCP_HC_HS_MAX            水平速度健康门槛                      15      m/s
+ HC     LOCP_HC_VZ_MAX            垂直下降速度健康门槛                  10      m/s
 
- 动作   LOCP_L1_ACT               LEVEL_1 动作                          3         3       0-7
- 动作   LOCP_L2_ACT               LEVEL_2 动作                          3         3       0-7
- 动作   LOCP_L3_ACT               LEVEL_3 动作                          7         7       0-7
- 动作   LOCP_OBS_ACT              OBS 触发动作                          3         3       0-7
-───────────────────────────────────────────────────────────────────────────────────────────────────
+ OBS    LOCP_OBS_EN               OBS 使能开关                          0        —
+ OBS    LOCP_OBS_JMP_EN           数值跳变检测开关                      0        —
+ OBS    LOCP_OBS_NAN_EN           NaN 注入检测开关                      0        —
+ OBS    LOCP_OBS_J_POS            位置跳变阈值                          10      m
+ OBS    LOCP_OBS_J_VEL            速度跳变阈值                           5       m/s
+ OBS    LOCP_OBS_J_YAW            Yaw 跳变阈值                         1.57     rad
+ OBS    LOCP_OBS_T                迟滞确认时间                          0.3     s
+
+ Crash  LOCP_CRASH_EN             碰撞检测使能开关                      0        —
+ Crash  LOCP_CRASH_THR            碰撞加速度范数阈值                   70      m/s²
+
+ 动作   （无动作参数）            LOCP_L1_ACT/L2_ACT/L3_ACT/OBS_ACT 已删除  —        动作硬编码
+────────────────────────────────────────────────────────────────────────────────────────────
 
 
 
@@ -108,7 +146,7 @@ make cuav_7-nano_default
 
 CUAV 7-Nano 使用 STM32H7 芯片，内置 DFU（Device Firmware Upgrade）Bootloader。
 
-**方法一：QGC 自动进入（推荐）**
+**方法一：QGC 自动进入**
 
 1. USB Type-C 连接飞控到电脑
 2. 打开 QGroundControl
@@ -156,9 +194,9 @@ param show LOCP_ARD_EN
 
 ```bash
 # 也可在 MAVLink Shell 中逐条设置:
-param set LOCP_COD_MAX_I 40
-param set LOCP_COD_ESC_MAX 12
-param set LOCP_COD_DELTA_I 8
+param set LOCP_COD_EN 1
+param set LOCP_COD_MAX_I 100
+param set LOCP_COD_DELTA_I 10
 param save
 ```
 
@@ -169,12 +207,12 @@ param save
 ```bash
 # MAVLink Shell 中确认 LOCP 状态:
 listener failsafe_flags
-# 全部 locp_xxx_triggered=0, locp_severity=0
+# 全部 locp_*_triggered=false, crash_detected=false
 ```
 
 #### 飞行中查看
 
-QGC → MAVLink Inspector → 搜索 `failsafe_flags` → 观察 `locp_severity` 是否为 0。
+QGC → MAVLink Inspector → 搜索 `failsafe_flags` → 观察所有 `locp_*_triggered` 是否均为 false。
 
 #### 需要调参的情况
 
@@ -201,21 +239,27 @@ param set LOCP_xxx_EN 0    # 将该维度关闭
 
 ```bash
 # === ARD ===
-param set LOCP_ARD_EN 1 ; param set LOCP_ARD_R_MAX 80 ; param set LOCP_ARD_P_MAX 80
-param set LOCP_ARD_Y_MAX 60 ; param set LOCP_ARD_RSP 6 ; param set LOCP_ARD_PSP 6
-param set LOCP_ARD_YSP 5 ; param set LOCP_ARD_DUR 0.3 ; param set LOCP_ARD_T 0.3
+param set LOCP_ARD_EN 1 ; param set LOCP_ARD_ACC_EN 1 ; param set LOCP_ARD_RATE_EN 1
+param set LOCP_ARD_R_MAX 100 ; param set LOCP_ARD_P_MAX 120 ; param set LOCP_ARD_Y_MAX 60
+param set LOCP_ARD_RSP 2 ; param set LOCP_ARD_PSP 2 ; param set LOCP_ARD_YSP 5
+param set LOCP_ARD_DUR 0.2 ; param set LOCP_ARD_T 0.1
 
 # === VRD ===
-param set LOCP_VRD_EN 1 ; param set LOCP_VRD_AH_MAX 8 ; param set LOCP_VRD_AD_MAX 6
-param set LOCP_VRD_VZD_MAX 3 ; param set LOCP_VRD_JERK 50 ; param set LOCP_VRD_T 0.3
+param set LOCP_VRD_EN 1 ; param set LOCP_VRD_AH_EN 1 ; param set LOCP_VRD_FF_EN 1
+param set LOCP_VRD_JK_EN 1 ; param set LOCP_VRD_HS_EN 1
+param set LOCP_VRD_AH_MAX 55 ; param set LOCP_VRD_AD_MAX 6 ; param set LOCP_VRD_VZD_MAX 3
+param set LOCP_VRD_JERK 100 ; param set LOCP_VRD_HS_MAX 15 ; param set LOCP_VRD_HS_DUR 3.0
+param set LOCP_VRD_T 0.3
 
 # === PRD ===
-param set LOCP_PRD_EN 1 ; param set LOCP_PRD_VZ_MAX 5 ; param set LOCP_PRD_ADROP 3
+param set LOCP_PRD_EN 1 ; param set LOCP_PRD_DES_EN 1 ; param set LOCP_PRD_OSC_EN 1
+param set LOCP_PRD_DRF_EN 1
+param set LOCP_PRD_VZ_MAX 5 ; param set LOCP_PRD_ADROP 3
 param set LOCP_PRD_ASTD 2 ; param set LOCP_PRD_HSPD 5 ; param set LOCP_PRD_T 0.5
 
 # === COD ===
-param set LOCP_COD_EN 1 ; param set LOCP_COD_MAX_I 40 ; param set LOCP_COD_DELTA_I 8
-param set LOCP_COD_DI_DT 30 ; param set LOCP_COD_ESC_MAX 12 ; param set LOCP_COD_T 0.3
+param set LOCP_COD_EN 1 ; param set LOCP_COD_MAX_I 100 ; param set LOCP_COD_DELTA_I 10
+param set LOCP_COD_DI_DT 300 ; param set LOCP_COD_T 0.5
 
 # === MTO ===
 param set LOCP_MTO_EN 1 ; param set LOCP_MTO_HB_T 1.5 ; param set LOCP_MTO_CMD_T 2.0
@@ -225,9 +269,8 @@ param set LOCP_MTO_RATE 3
 param set LOCP_OBS_EN 1 ; param set LOCP_OBS_JUMP_POS 10 ; param set LOCP_OBS_JUMP_VEL 5
 param set LOCP_OBS_JUMP_YAW 1.57 ; param set LOCP_OBS_T 0.3
 
-# === Crash & 动作 ===
-param set LOCP_CRASH_THR 50 ; param set LOCP_L1_ACT 3 ; param set LOCP_L2_ACT 3
-param set LOCP_L3_ACT 7 ; param set LOCP_OBS_ACT 3
+# === 总开关 + Crash + TRD（最简安全配置）===
+param set LOCP_EN 1 ; param set LOCP_CRASH_EN 1 ; param set LOCP_TRD_EN 1
 
 param save
 ```

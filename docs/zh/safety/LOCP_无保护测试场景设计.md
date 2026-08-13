@@ -3,7 +3,7 @@
 > **目标**: 验证 LOCP 在 **不应触发保护的场景下正确保持静默**（无误报 / 无 False Positive）
 > **测试类型**: 功能正确性验证——确保「没有保护时不乱保护」
 > **关联文档**: `px4-locp-design.md`（设计方案）
-> **文档日期**: 2026-08-04
+> **文档日期**: 2026-08-13
 
 ---
 
@@ -17,8 +17,8 @@
 6. [S3: 全部 EN=0 时不触发](#6-s3-全部-en0-时不触发)
 7. [S4: 未解锁状态不触发](#7-s4-未解锁状态不触发)
 8. [S5: 迟滞时间未满不触发](#8-s5-迟滞时间未满不触发)
-9. [S6: 数据源耦合折扣](#9-s6-数据源耦合折扣)
-10. [S7: 单 MTO 不升级 LEVEL_2](#10-s7-单-mto-不升级-level_2)
+9. [S6: 多维度同时触发取最严格动作](#9-s6-多维度同时触发取最严格动作)
+10. [S7: MTO 单维度触发 → 降落](#10-s7-mto-单维度触发--降落)
 11. [S8: 数据源无效/缺失不误判](#11-s8-数据源无效缺失不误判)
 12. [S9: 边界条件测试](#12-s9-边界条件测试)
 13. [S10: OBS 正常 Setpoint 不触发](#13-s10-obs-正常-setpoint-不触发)
@@ -118,8 +118,8 @@ graph TB
 |------|------|
 | **目的** | 验证 LOCP 在稳定悬停时所有维度均不触发 |
 | **前置条件** | 所有 LOCP_EN=1，四旋翼 SITL，GPS 正常 |
-| **测试步骤** | 1. 解锁起飞 → 悬停 30s<br>2. 检查 `failure_detector_status` / `failsafe_flags`<br>3. 检查 locp_severity 始终为 0 |
-| **预期结果** | ✅ locp_severity=0，所有 locp_xxx_triggered=false |
+| **测试步骤** | 1. 解锁起飞 → 悬停 30s<br>2. 检查 `failure_detector_status` / `failsafe_flags`<br>3. 检查所有 locp_*_triggered 均为 false |
+| **预期结果** | ✅ 所有 locp_*_triggered=false |
 | **判定标准** | 悬停过程中无任何 LOCP 标志位置位 |
 
 ### S1.2 巡航飞行
@@ -129,8 +129,8 @@ graph TB
 | **目的** | 验证正常巡航（含正常加减速和转向）不触发 VRD/PRD/ARD |
 | **前置条件** | 所有 LOCP_EN=1 |
 | **测试步骤** | 1. 解锁起飞 → 悬停 5s<br>2. 执行正常 Mission 或 Position 模式移动（速度 ≤ 5m/s）<br>3. 执行正常 Yaw 旋转（≤ 180°/s）<br>4. 整个过程监控 LOCP 标志位 |
-| **预期结果** | ✅ locp_severity=0，无任何触发 |
-| **判定标准** | 巡航过程中 locp_severity 始终为 0 |
+| **预期结果** | ✅ 所有 locp_*_triggered=false，无任何触发 |
+| **判定标准** | 巡航过程中所有 locp_*_triggered 始终为 false |
 
 ### S1.3 正常降落 (Land Mode)
 
@@ -140,7 +140,7 @@ graph TB
 | **前置条件** | 所有 LOCP_EN=1，高度 ≥ 10m |
 | **测试步骤** | 1. 起飞至 10m 悬停<br>2. 切换到 Land 模式<br>3. 监控降落过程中的 LOCP 标志位直至着陆 |
 | **预期结果** | ✅ 正常降落速度 (~0.5~1m/s) 不触发 PRD<br>✅ vz < LOCP_PRD_VZ_MAX(5m/s) |
-| **判定标准** | 降落到着陆期间 locp_severity=0 |
+| **判定标准** | 降落到着陆期间所有 locp_*_triggered 为 false |
 
 ---
 
@@ -151,20 +151,20 @@ graph TB
 | 项目 | 内容 |
 |------|------|
 | **目的** | 验证正常机动（角加速度/角速率低于阈值）不触发 ARD |
-| **关键参数** | `LOCP_ARD_R_MAX=80 rad/s²`, `LOCP_ARD_RSP=6 rad/s`, `LOCP_ARD_DUR=0.3s` |
-| **测试步骤** | 1. 解锁起飞悬停<br>2. 执行小幅 Roll 摇杆输入（角速率 ~3 rad/s，远低 6 rad/s 设定点）<br>3. 执行小幅 Pitch 机动<br>4. 检查 ARD 不触发 |
+| **关键参数** | `LOCP_ARD_R_MAX=100 rad/s²`, `LOCP_ARD_RSP=2 rad/s`, `LOCP_ARD_DUR=0.2s` |
+| **测试步骤** | 1. 解锁起飞悬停<br>2. 执行小幅 Roll 摇杆输入（角速率 < 2 rad/s，低于设定点）<br>3. 执行小幅 Pitch 机动<br>4. 检查 ARD 不触发 |
 | **预期结果** | ✅ `locp_ard_triggered=false` |
-| **原理说明** | 角加速度由两帧差分计算（dω/dt），正常机动远低于 80 rad/s² |
+| **原理说明** | 角加速度由两帧差分计算（dω/dt），正常机动远低于 100 rad/s² |
 
 ### S2.2 VRD 速度变化率——低于阈值
 
 | 项目 | 内容 |
 |------|------|
 | **目的** | 验证正常加速度/减速度不触发 VRD |
-| **关键参数** | `LOCP_VRD_AH_MAX=8 m/s²`, `LOCP_VRD_AD_MAX=6 m/s²`, `LOCP_VRD_JERK=50 m/s³` |
+| **关键参数** | `LOCP_VRD_AH_MAX=55 m/s²`, `LOCP_VRD_AD_MAX=6 m/s²`, `LOCP_VRD_JERK=100 m/s³` |
 | **测试步骤** | 1. 悬停后缓慢加速至 3m/s（加速度 ~2 m/s²）<br>2. 缓慢减速至悬停<br>3. 检查 VRD 不触发 |
 | **预期结果** | ✅ `locp_vrd_triggered=false` |
-| **关键** | 正常飞行水平加速度通常 1-3 m/s²，远低于 8 m/s² |
+| **关键** | 正常飞行水平加速度通常 1-3 m/s²，远低于 55 m/s² |
 
 ### S2.3 PRD 位置变化率——低于阈值
 
@@ -181,8 +181,8 @@ graph TB
 | 项目 | 内容 |
 |------|------|
 | **目的** | 验证正常飞行电流波动不触发 COD |
-| **关键参数** | `LOCP_COD_DELTA_I=10A`, `LOCP_COD_MAX_I=45A`, `LOCP_COD_DI_DT=30 A/s` |
-| **测试步骤** | 1. 悬停状态下监控电池电流<br>2. 确认电流稳定在正常范围（四旋翼悬停通常 5-15A）<br>3. 轻微推油门（电流缓慢变化，dI/dt < 30） |
+| **关键参数** | `LOCP_COD_DELTA_I=10A`, `LOCP_COD_MAX_I=100A`, `LOCP_COD_DI_DT=300 A/s` |
+| **测试步骤** | 1. 悬停状态下监控电池电流<br>2. 确认电流稳定在正常范围（四旋翼悬停通常 5-15A）<br>3. 轻微推油门（电流缓慢变化，dI/dt < 300） |
 | **预期结果** | ✅ `locp_cod_triggered=false` |
 
 ---
@@ -194,8 +194,8 @@ graph TB
 | **目的** | 验证所有 LOCP 维度禁用后，无论飞行状态如何都不触发保护 |
 | **前置条件** | 将所有 LOCP_xxx_EN 全部设为 0 |
 | **测试步骤** | 1. `param set LOCP_ARD_EN 0`（同样设置 VRD/PRD/COD/MTO/OBS）<br>2. 解锁起飞，执行各种极端机动<br>3. 人为制造大角速率、大加速度、快速下降等<br>4. 监控 LOCP 标志位 |
-| **预期结果** | ✅ locp_severity=0<br>✅ 所有 locp_xxx_triggered=false<br>✅ 不会执行任何 LOCP 保护动作 |
-| **判定标准** | locp_severity 始终为 0 |
+| **预期结果** | ✅ 所有 locp_*_triggered=false<br>✅ crash_detected=false<br>✅ 不会执行任何 LOCP 保护动作 |
+| **判定标准** | 全部 EN=0 时所有标志位始终为 false |
 
 ---
 
@@ -208,7 +208,7 @@ graph TB
 | **目的** | 验证 Disarmed 状态下 `updateLOCP()` 直接 return，不做任何检测 |
 | **实现依据** | `FailureDetector.cpp:512`——`arming_state != ARMED` 时全部重置并 return |
 | **测试步骤** | 1. 不接电池/不上电<br>2. 或者接电池但不解锁<br>3. 检查 LOCP 标志位 |
-| **预期结果** | ✅ locp_severity=0<br>✅ 所有标志位=false |
+| **预期结果** | ✅ 所有标志位=false |
 
 ### S4.2 解锁但未起飞
 
@@ -226,62 +226,61 @@ graph TB
 
 | 项目 | 内容 |
 |------|------|
-| **目的** | 验证短暂的角加速度尖峰（< 0.3s）不触发 ARD |
-| **关键参数** | `LOCP_ARD_T=0.3s`（迟滞确认时间） |
-| **测试原理** | 传感器噪声或瞬时扰动产生的尖峰通常 < 0.1s，应被迟滞滤波器过滤 |
-| **测试步骤** | 1. 悬停状态下，短时间内（~0.1s）产生一个超过 80 rad/s² 的角加速度尖峰<br>2. 检查 ARD 在尖峰消失后是否复位 |
-| **预期结果** | ✅ `locp_ard_triggered` 在尖峰消失后 0.3s 内复位<br>✅ 不会触发 LEVEL_1 动作 |
+| **目的** | 验证短暂的角加速度尖峰（< 迟滞时间）不触发 ARD |
+| **关键参数** | `LOCP_ARD_T=0.1s`（角加速度迟滞确认时间） |
+| **测试原理** | 传感器噪声或瞬时扰动产生的尖峰通常 < 0.1s，应被迟滞滤波器过滤；实测正常飞行（排除地面翻倒失控样本）连续超阈段最长 0.042s，故迟滞取 0.1s |
+| **测试步骤** | 1. 悬停状态下，短时间内（~0.05s）产生一个超过 100 rad/s² 的角加速度尖峰<br>2. 检查 ARD 在尖峰消失后是否复位 |
+| **预期结果** | ✅ `locp_ard_triggered` 在尖峰消失后 0.1s 内复位<br>✅ 不会触发停桨动作 |
 | **判定标准** | 瞬时尖峰不产生持续的 ARD 触发状态 |
 
 ### S5.2 各维度迟滞验证
 
 | 维度 | 迟滞参数 | 默认值 | 瞬时故障持续 | 预期 |
 |------|----------|--------|:----------:|------|
-| ARD | `LOCP_ARD_T` | 0.3s | 0.2s | ✅ 不触发 |
+| ARD | `LOCP_ARD_T` | 0.1s | 0.05s | ✅ 不触发 |
 | VRD | `LOCP_VRD_T` | 0.3s | 0.2s | ✅ 不触发 |
 | PRD | `LOCP_PRD_T` | 0.5s | 0.3s | ✅ 不触发 |
-| COD | `LOCP_COD_T` | 0.3s | 0.2s | ✅ 不触发 |
+| COD | `LOCP_COD_T` | 0.5s | 0.3s | ✅ 不触发 |
 | OBS | `LOCP_OBS_T` | 0.3s | 0.2s | ✅ 不触发 |
 
 ---
 
-## 9. S6: 数据源耦合折扣
+## 9. S6: 多维度同时触发取最严格动作
 
-### S6.1 VRD + PRD 折扣机制验证
+### S6.1 ARD + COD 同时触发 → 停桨
 
 | 项目 | 内容 |
 |------|------|
-| **目的** | 验证 VRD 和 PRD 同时触发时 `count -= 1` 折扣生效，避免 EKF 源问题被误判为 LEVEL_2 |
-| **实现依据** | `FailureDetector.cpp:870`——`if (_locp_vrd_triggered && _locp_prd_triggered) count -= 1` |
-| **测试场景** | EKF 因 GPS 丢失而发散，导致 VRD 和 PRD 同时触发（但并非双重故障） |
-| **前置条件** | LOCP 全部启用，GPS 可用 |
-| **测试步骤** | 1. 悬停后关闭 GPS 仿真（SITL 中 `gps stop`）<br>2. 等待 EKF 发散（vz/位置估计开始漂移）<br>3. 监控 locp_severity |
-| **预期结果** | ✅ VRD 和 PRD 同时触发时 locp_severity=1（不是 2）<br>✅ 因为 count=2-1=1，只触发 LEVEL_1（降落）<br>✅ 不会触发 LEVEL_2/3 的激进动作 |
-| **判定标准** | `locp_severity != 2` 当仅有 VRD+PRD 触发时 |
+| **目的** | 验证多个维度同时触发时，failsafe 自动取最严格动作（Disarm 优先于 Land） |
+| **实现依据** | `failsafe.cpp`——各维度独立 CHECK_FAILSAFE，failsafe 框架按 Action 优先级取最高 |
+| **测试场景** | 同时制造姿态异常 + 电流异常（独立数据源） |
+| **前置条件** | LOCP 全部启用 |
+| **测试步骤** | 1. 悬停中同时模拟 ARD（大角速率）和 COD（电流突增）<br>2. 监控 failsafe_flags |
+| **预期结果** | ✅ `locp_ard_triggered=true` 且 `locp_cod_triggered=true`<br>✅ failsafe 选择 Disarm（最严格动作） |
+| **判定标准** | 多维度同时触发时动作优先级正确（Disarm > Land） |
 
 ---
 
-## 10. S7: 单 MTO 不升级 LEVEL_2
+## 10. S7: MTO 单维度触发 → 降落
 
-### S7.1 comm_dead 逻辑验证
-
-| 项目 | 内容 |
-|------|------|
-| **目的** | 验证仅 MAVLink 超时（MTO）触发时，不会升级到 LEVEL_2 |
-| **实现依据** | `FailureDetector.cpp:872`——`comm_dead = MTO && (count_excl_mto >= 1)` |
-| **背景** | 2026-08-03 修复：之前 `count_excl_mto >= 0` 导致单 MTO 误升为 LEVEL_2 |
-| **测试步骤** | 1. 悬停飞行中，断开 GCS（MAVLink）连接<br>2. 仅 MTO 触发，其他维度均正常<br>3. 监控 locp_severity |
-| **预期结果** | ✅ locp_severity=1（LEVEL_1），不是 2<br>✅ 因为 count_excl_mto=0，comm_dead=false |
-| **判定标准** | `locp_severity=1` 当仅有 MTO 单维度触发时 |
-
-### S7.2 MTO + 1 个其他异常 = LEVEL_2
+### S7.1 MTO 触发验证
 
 | 项目 | 内容 |
 |------|------|
-| **目的** | 相反验证：MTO + 1 个其他维度 = 正确升级到 LEVEL_2 |
-| **测试步骤** | 1. 悬停后断开 GCS（MTO 触发）<br>2. 同时制造 ARD 异常（如模拟大角速率）<br>3. 监控 locp_severity |
-| **预期结果** | ✅ locp_severity=2（count_excl_mto=1, comm_dead=true） |
-| **说明** | 此为正例对照，验证 comm_dead 逻辑在正确场景下工作 |
+| **目的** | 验证仅 MAVLink 超时（MTO）触发时，执行 Land（飞机自身正常，可安全降落） |
+| **实现依据** | `failsafe.cpp`——`CHECK_FAILSAFE(status_flags, locp_mto_land, Action::Land)`（健康）`+ locp_mto_disarm → Disarm`（不健康） |
+| **测试步骤** | 1. 悬停飞行中，断开 GCS（MAVLink）连接<br>2. 仅 MTO 触发，其他维度均正常<br>3. 监控 failsafe_flags 与导航状态 |
+| **预期结果** | ✅ `locp_mto_triggered=true`<br>✅ failsafe 选择 Land（自动降落）<br>✅ 不会停桨（飞机自身正常） |
+| **判定标准** | 仅 MTO 触发 且 飞机健康 → 降落；飞机不健康 → 停桨 |
+
+### S7.2 MTO + ARD 同时触发 → 停桨（最严格动作）
+
+| 项目 | 内容 |
+|------|------|
+| **目的** | MTO 触发的同时出现 ARD 失控，应升级为停桨（ARD 的 Disarm 优先于 MTO 的 Land） |
+| **测试步骤** | 1. 悬停后断开 GCS（MTO 触发）<br>2. 同时制造 ARD 异常（如模拟大角速率）<br>3. 监控 failsafe_flags 与动作 |
+| **预期结果** | ✅ `locp_ard_triggered=true`<br>✅ failsafe 选择 Disarm（最严格动作） |
+| **说明** | 此为正例对照，验证动作优先级在叠加场景下正确 |
 
 ---
 
@@ -330,12 +329,12 @@ graph TB
 
 | 维度 | 参数 | 默认阈值 | 测试值 | 预期 |
 |------|------|----------|--------|------|
-| ARD-R角加速度 | `LOCP_ARD_R_MAX` | 80 rad/s² | 79 rad/s² | ✅ 不触发 |
-| VRD-水平加速度 | `LOCP_VRD_AH_MAX` | 8 m/s² | 7.9 m/s² | ✅ 不触发 |
+| ARD-R角加速度 | `LOCP_ARD_R_MAX` | 100 rad/s² | 99 rad/s² | ✅ 不触发 |
+| VRD-水平加速度 | `LOCP_VRD_AH_MAX` | 55 m/s² | 54 m/s² | ✅ 不触发 |
 | PRD-下降速度 | `LOCP_PRD_VZ_MAX` | 5 m/s | 4.9 m/s | ✅ 不触发 |
 | COD-电流偏差 | `LOCP_COD_DELTA_I` | 10 A | 9.9 A | ✅ 不触发 |
-| COD-电流变化率 | `LOCP_COD_DI_DT` | 30 A/s | 29 A/s | ✅ 不触发 |
-| Crash-加速度 | `LOCP_CRASH_THR` | 50 m/s² | 49 m/s² | ✅ 不触发 |
+| COD-电流变化率 | `LOCP_COD_DI_DT` | 300 A/s | 290 A/s | ✅ 不触发 |
+| Crash-加速度 | `LOCP_CRASH_THR` | 70 m/s² | 69 m/s² | ✅ 不触发 |
 
 ### S9.2 阈值边缘数浮动验证
 
@@ -408,7 +407,7 @@ graph TB
 | 4 | ARD: 角加速度 = 79 (< 80) 不触发 | ☐ | ☐ |
 | 5 | VRD: 正常水平加速度 < 8m/s² 不触发 | ☐ | ☐ |
 | 6 | VRD: 单条件不满足 (az大但vz小) 不触发 freefall | ☐ | ☐ |
-| 7 | VRD: 正常 jerk < 50m/s³ 不触发 | ☐ | ☐ |
+| 7 | VRD: 正常 jerk < 100m/s³ 不触发 | ☐ | ☐ |
 | 8 | VRD: 瞬时加速度尖峰 (<0.3s) 被迟滞过滤 | ☐ | ☐ |
 | 9 | PRD: 正常降落 vz~1m/s < 5m/s 不触发 | ☐ | ☐ |
 | 10 | PRD: 高度下降 < 3m (仅vz超但下降量不足) 不触发 | ☐ | ☐ |
@@ -425,66 +424,72 @@ graph TB
 | 21 | OBS: 正常 setpoint 连续变化（每帧位移 < 10m） | ☐ | ☐ |
 | 22 | OBS: Yaw ±π 环绕不误判跳变 | ☐ | ☐ |
 | 23 | OBS: 非 Offboard 模式不触发 | ☐ | ☐ |
-| 24 | Crash: 加速度 < 50m/s² (~5g) 不触发 | ☐ | ☐ |
+| 24 | Crash: 加速度 < 70m/s² (~7.1g) 不触发 | ☐ | ☐ |
 
-### 14.2 综合仲裁「无保护」检查
+### 14.2 固定动作「无保护」检查
 
 | # | 场景 | SITL | 硬件事后 |
 |---|------|:----:|:------:|
-| 25 | VRD+PRD 同时触发时 count 折扣 -1 → severity=1 不升级 | ☐ | ☐ |
-| 26 | 仅 MTO 单触发 → severity=1，不升级 (comm_dead=false) | ☐ | ☐ |
-| 27 | 0 个维度触发 → severity=0 | ☐ | ☐ |
-| 28 | 全部 EN=0 → severity 始终为 0 | ☐ | ☐ |
-| 29 | Disarmed 状态 → 所有状态重置，severity=0 | ☐ | ☐ |
-| 30 | 1 个维度触发 → severity=1（不升级 LEVEL_2/3） | ☐ | ☐ |
+| 25 | 0 个维度触发 → 所有 locp_*_triggered=false | ☐ | ☐ |
+| 26 | 仅 MTO 单触发 且 飞机健康 → 执行 Land | ☐ | ☐ |
+| 27 | 仅 OBS 单触发 且 飞机健康 → 执行 Land | ☐ | ☐ |
+| 28 | 全部 EN=0 → 所有标志位始终为 false | ☐ | ☐ |
+| 29 | Disarmed 状态 → 所有状态重置 | ☐ | ☐ |
+| 30 | 单个失控维度（ARD/VRD/PRD/COD）触发 → 停桨 | ☐ | ☐ |
 
 ---
 
 ## 附录 A: 关键参数默认值速查
 
+> 完整参数以 `failure_detector_params.c` 为准（63 个）。**所有使能开关默认 = 0（禁用）**。
+
 | 参数 | 默认值 | 含义 |
 |------|--------|------|
-| `LOCP_ARD_EN` | 1 | ARD 使能 |
-| `LOCP_ARD_R_MAX` | 80 rad/s² | Roll 角加速度最大阈值 |
-| `LOCP_ARD_P_MAX` | 80 rad/s² | Pitch 角加速度最大阈值 |
+| `LOCP_EN` | 0 | LOCP 总开关 |
+| `LOCP_ARD_EN` | 0 | ARD 使能 |
+| `LOCP_ARD_R_MAX` | 100 rad/s² | Roll 角加速度最大阈值 |
+| `LOCP_ARD_P_MAX` | 120 rad/s² | Pitch 角加速度最大阈值 |
 | `LOCP_ARD_Y_MAX` | 60 rad/s² | Yaw 角加速度最大阈值 |
-| `LOCP_ARD_RSP` | 6 rad/s | Roll 持续高角速率设定点 |
-| `LOCP_ARD_PSP` | 6 rad/s | Pitch 持续高角速率设定点 |
+| `LOCP_ARD_RSP` | 2 rad/s | Roll 持续高角速率设定点 |
+| `LOCP_ARD_PSP` | 2 rad/s | Pitch 持续高角速率设定点 |
 | `LOCP_ARD_YSP` | 5 rad/s | Yaw 持续高角速率设定点 |
-| `LOCP_ARD_DUR` | 0.3 s | 持续高角速率最短时间 |
-| `LOCP_ARD_T` | 0.3 s | ARD 迟滞确认时间 |
-| `LOCP_VRD_EN` | 1 | VRD 使能 |
-| `LOCP_VRD_AH_MAX` | 8 m/s² | 水平加速度最大阈值 |
+| `LOCP_ARD_DUR` | 0.2 s | 持续高角速率最短时间 |
+| `LOCP_ARD_T` | 0.1 s | ARD 角加速度迟滞确认时间 |
+| `LOCP_VRD_EN` | 0 | VRD 使能 |
+| `LOCP_VRD_AH_MAX` | 55 m/s² | 水平加速度最大阈值 |
 | `LOCP_VRD_AD_MAX` | 6 m/s² | 垂直加速度阈值 |
 | `LOCP_VRD_VZD_MAX` | 3 m/s | 垂直下降速度阈值 |
-| `LOCP_VRD_JERK` | 50 m/s³ | Jerk 阈值 |
+| `LOCP_VRD_JERK` | 100 m/s³ | Jerk 阈值 |
+| `LOCP_VRD_HS_MAX` | 15 m/s | 水平速度持续异常阈值 |
 | `LOCP_VRD_T` | 0.3 s | VRD 迟滞确认时间 |
-| `LOCP_PRD_EN` | 1 | PRD 使能 |
+| `LOCP_PRD_EN` | 0 | PRD 使能 |
 | `LOCP_PRD_VZ_MAX` | 5 m/s | 下降速度阈值 |
 | `LOCP_PRD_ADROP` | 3 m | 高度下降量阈值 |
 | `LOCP_PRD_ASTD` | 2 m | 高度振荡标准差阈值 |
 | `LOCP_PRD_HSPD` | 5 m/s | 水平漂移速度阈值 |
 | `LOCP_PRD_T` | 0.5 s | PRD 迟滞确认时间 |
-| `LOCP_COD_EN` | 1 | COD 使能 |
+| `LOCP_COD_EN` | 0 | COD 使能 |
 | `LOCP_COD_DELTA_I` | 10 A | 电流偏离均值阈值 |
-| `LOCP_COD_MAX_I` | 45 A | 总电流绝对值上限 |
-| `LOCP_COD_DI_DT` | 30 A/s | 电流变化率阈值 |
-| `LOCP_COD_ESC_MAX` | 10 A | 单路 ESC 电流最大阈值 |
-| `LOCP_COD_T` | 0.3 s | COD 迟滞确认时间 |
-| `LOCP_MTO_EN` | 1 | MTO 使能 |
+| `LOCP_COD_MAX_I` | 100 A | 总电流绝对值上限 |
+| `LOCP_COD_DI_DT` | 300 A/s | 电流变化率阈值 |
+| `LOCP_COD_T` | 0.5 s | COD 迟滞确认时间 |
+| `LOCP_MTO_EN` | 0 | MTO 使能 |
 | `LOCP_MTO_HB_T` | 1.5 s | 心跳超时阈值 |
 | `LOCP_MTO_CMD_T` | 2.0 s | 指令超时阈值 |
 | `LOCP_MTO_RATE` | 3 Hz | 消息最低速率 |
-| `LOCP_OBS_EN` | 1 | OBS 使能 |
+| `LOCP_TRD_EN` | 0 | TRD 使能 |
+| `LOCP_TRD_THR_H` | 0.85 | 高油门判定阈值 |
+| `LOCP_TRD_T` | 3.0 s | 高油门无响应确认时间 |
+| `LOCP_TRD_LAND_H` | 5.0 m | 低高度降落阈值 |
+| `LOCP_OBS_EN` | 0 | OBS 使能 |
 | `LOCP_OBS_JUMP_POS` | 10 m | 位置跳变阈值 |
 | `LOCP_OBS_JUMP_VEL` | 5 m/s | 速度跳变阈值 |
 | `LOCP_OBS_JUMP_YAW` | 1.57 rad | Yaw 跳变阈值 |
 | `LOCP_OBS_T` | 0.3 s | OBS 迟滞确认时间 |
-| `LOCP_CRASH_THR` | 50 m/s² | 碰撞加速度阈值 |
-| `LOCP_L1_ACT` | 3 (Land) | LEVEL_1 动作 |
-| `LOCP_L2_ACT` | 3 (Land) | LEVEL_2 动作 |
-| `LOCP_L3_ACT` | 7 (Disarm) | LEVEL_3 动作 |
-| `LOCP_OBS_ACT` | 3 (Land) | OBS 独立动作 |
+| `LOCP_CRASH_EN` | 0 | 碰撞检测使能 |
+| `LOCP_CRASH_THR` | 70 m/s² | 碰撞加速度阈值 |
+
+> 动作参数 `LOCP_L1_ACT / LOCP_L2_ACT / LOCP_L3_ACT / LOCP_OBS_ACT` 已删除，动作硬编码（失控→停桨，仅 MTO/OBS→降落）。
 
 ---
 
@@ -519,7 +524,7 @@ sleep 30
 
 # 检查日志
 echo "=== 检查结果 ==="
-if grep -q "locp_severity: [1-9]" $LOG_DIR/failsafe_flags.log; then
+if grep -q "locp_ard_triggered: true\|locp_vrd_triggered: true" $LOG_DIR/failsafe_flags.log; then
     echo "❌ FAIL: LOCP 在不应该触发时触发了!"
 else
     echo "✅ PASS: LOCP 在正常悬停下未触发"

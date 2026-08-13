@@ -374,22 +374,33 @@ void FailureDetector::updateMotorStatus(const vehicle_status_s &vehicle_status, 
 //   ARD (Attitude Rate Detection):    姿态角速度/角加速度异常
 //   VRD (Velocity Rate Detection):    速度变化率异常（水平加速度/自由落体/jerk）
 //   PRD (Position Rate Detection):    位置/高度变化率异常（急降/振荡/漂移）
-//   COD (Current Overdraw Detection): 电流异常（总电流突增/dI/dt尖峰/单路ESC过流）
+//   COD (Current Overdraw Detection): 电流异常（总电流突增/dI/dt尖峰）
 //   MTO (MAVLink Timeout):            MAVLink通信超时（心跳/指令/速率）
 //   Crash:                             碰撞/撞击瞬时检测（IMU加速度尖峰）
 //
-// 严重等级仲裁规则：
-//   LEVEL_1 (降落):  任意 1 个维度触发
-//   LEVEL_2 (急降):  任意 2 个维度触发，或 MTO + 1个异常
-//   LEVEL_3 (终止):  3 个及以上维度触发，或 电流异常+姿态异常 同时触发
+// 保护动作分配（动作由 failsafe 状态机硬编码执行，无等级参数）：
+//   停桨 (Disarm): ARD / VRD / PRD / COD / Crash —— 飞机自身已失控，
+//                  控制回路不可信，"降落"无法可靠执行，直接停桨。
+//   降落 (Land):   MTO / OBS —— 飞机自身正常，仅外部输入（链路/机载指令）
+//                  异常，控制仍可信，可安全降落。
+//
+// 全量日志标定（2026-08-13）：6-8 月 136 份纯净日志（已排除 EGO 故障 13 份、
+// 卡网 2 份、翻倒 1 份、碰撞 1 份、地面假速度 5 份）各维度阈值裕度 1.3~11 倍；
+// 6-8 月 17 份失控日志全部被现有维度覆盖：
+//   EGO 故障(13) → VRD_HS 通道（47~107 m/s ≫ 阈值 15，持续 3s+）
+//   卡网(309/311) → Crash(107/123) + ARD（ω>5 持续 0.26s/0.14s）
+//   翻倒(233) → Crash(105) + ARD（ω>5 持续 0.96s）
+//   碰撞(199) → Crash(77)
 // ============================================================
 
 void FailureDetector::updateLOCP(const vehicle_status_s &vehicle_status,
 				 const vehicle_control_mode_s &vehicle_control_mode)
 {
-	// 未解锁时重置所有 LOCP 状态，不做检测
-	if (vehicle_status.arming_state != vehicle_status_s::ARMING_STATE_ARMED) {
-		_locp_severity = 0;
+	// 未解锁 或 LOCP 总开关禁用(LOCP_EN=0) 时重置所有 LOCP 状态，不做检测
+	if ((vehicle_status.arming_state != vehicle_status_s::ARMING_STATE_ARMED)
+	    || !_param_locp_en.get()) {
+		const hrt_abstime now = hrt_absolute_time();
+
 		_locp_ard_triggered = false;
 		_locp_vrd_triggered = false;
 		_locp_prd_triggered = false;
@@ -397,10 +408,67 @@ void FailureDetector::updateLOCP(const vehicle_status_s &vehicle_status,
 		_locp_mto_triggered = false;
 		_locp_obs_triggered = false;
 		_crash_detected = false;
+		_locp_vehicle_healthy = true;
 		_rate_window_start = 0;
 		_mavlink_msg_counter = 0;
 		_sp_was_valid = false;
 		_locp_arm_time = 0;
+
+		// --- 重置各维度检测内部状态（计时器 / 历史缓冲 / 前一帧值） ---
+		// ARD: 姿态变化率检测
+		_rollspeed_prev = 0.f;
+		_pitchspeed_prev = 0.f;
+		_yawspeed_prev = 0.f;
+		_att_rate_high_start = 0;
+		_att_rate_timestamp_prev = 0;
+
+		// VRD: 速度变化率检测
+		_acc_horiz_prev = 0.f;
+		_acc_horiz_timestamp_prev = 0;
+		_horiz_spd_high_start = 0;
+
+		// PRD: 位置变化率检测
+		for (uint8_t i = 0; i < 10; i++) { _alt_history[i] = 0.f; }
+		_alt_history_idx = 0;
+		_alt_history_count = 0;
+
+		// COD: 电流异常检测
+		for (uint8_t i = 0; i < 20; i++) { _current_sliding_window[i] = 0.f; }
+		_current_window_idx = 0;
+		_current_window_count = 0;
+		_current_prev = 0.f;
+		_current_timestamp_prev = 0;
+
+		// MTO: MAVLink 消息超时检测
+		_last_mavlink_heartbeat = 0;
+		_last_vehicle_command = 0;
+
+		// Crash: 碰撞/撞击检测
+		_crash_impact_time = 0;
+
+		// OBS: Offboard Setpoint 异常检测
+		_sp_pos_prev[0] = _sp_pos_prev[1] = _sp_pos_prev[2] = 0.f;
+		_sp_vel_prev[0] = _sp_vel_prev[1] = _sp_vel_prev[2] = 0.f;
+		_sp_yaw_prev = 0.f;
+
+		// 重置 TRD 动力响应校验状态
+		_trd_high_thr_start = 0;
+		_trd_normal_start = 0;
+		_trd_land_try_start = 0;
+		_trd_takeover_watch_start = 0;
+		_locp_trd_triggered = false;
+		_locp_trd_land = false;
+		_locp_trd_no_takeover = false;
+		_last_gcs_cmd = 0;
+		_last_rc_input = 0;
+
+		// 重置各维度迟滞滤波器（防止上次飞行的触发状态残留到下次解锁）
+		_ard_hysteresis.set_state_and_update(false, now);
+		_vrd_hysteresis.set_state_and_update(false, now);
+		_prd_hysteresis.set_state_and_update(false, now);
+		_cod_hysteresis.set_state_and_update(false, now);
+		_obs_hysteresis.set_state_and_update(false, now);
+
 		return;
 	}
 
@@ -427,17 +495,15 @@ void FailureDetector::updateLOCP(const vehicle_status_s &vehicle_status,
 		_locp_prd_triggered = _param_locp_prd_en.get() && checkPositionRateAnomaly(loc, home);
 	}
 
-	// 4) COD: 电流异常检测（总电流突增/dI/dt尖峰/单路ESC过流）
+	// 4) COD: 电流异常检测（总电流突增/dI/dt尖峰）
 	// 启动保护：解锁后 LOCP_COD_ARM_DLY 秒内跳过 COD
 	// （电机启动瞬间电流从 0 爬升到悬停电流是正常行为，不应触发保护）
 	const bool cod_startup_guard = (_locp_arm_time != 0)
 				      && (hrt_absolute_time() - _locp_arm_time <
 					  static_cast<hrt_abstime>(_param_locp_cod_arm_dly.get() * 1_s));
 	battery_status_s bat;
-	esc_status_s esc;
 	if (_battery_status_sub.update(&bat)) {
-		_esc_status_sub.copy(&esc);
-		_locp_cod_triggered = _param_locp_cod_en.get() && !cod_startup_guard && checkCurrentAnomaly(bat, esc);
+		_locp_cod_triggered = _param_locp_cod_en.get() && !cod_startup_guard && checkCurrentAnomaly(bat);
 	}
 
 	// 5) MTO: MAVLink 消息超时检测（心跳超时/指令超时/消息速率骤降）
@@ -447,10 +513,25 @@ void FailureDetector::updateLOCP(const vehicle_status_s &vehicle_status,
 	_locp_obs_triggered = _param_locp_obs_en.get() && checkOffboardSetpointSanity();
 
 	// 7) Crash: 碰撞/撞击瞬时检测（基于 IMU 加速度范数阈值，无迟滞）
-	_crash_detected = checkCrashImpact();
+	// 由 LOCP_CRASH_EN 控制开关（0=禁用碰撞检测）
+	_crash_detected = _param_locp_crash_en.get() && checkCrashImpact();
 
-	// 综合仲裁：根据各维度触发情况计算最终严重等级
-	_locp_severity = evaluateLOCPSeverity();
+	// 8) TRD: 动力响应校验（高油门但垂直加速度不足）
+	// 检测"指标矛盾"：油门指令高（期望大推力），但实际垂直加速度不足。
+	// 覆盖：卡网（顶部/侧边）、动力丢失、桨损坏、控制失效。
+	// 分级动作：≤LOCP_TRD_LAND_H 请求降落（柔和），否则由 failsafe 直接停桨。
+	// 锁存防空窗：确认触发后不因单帧恢复而复位，仅连续正常 3s 才复位。
+	// 由 LOCP_TRD_EN 控制开关（0=禁用整个 TRD 检测）
+	_locp_trd_triggered = _param_locp_trd_en.get() && checkThrustResponse(vehicle_status);
+
+	// 各维度触发标志（locp_*_triggered）直接由 failsafe 状态机按固定动作执行：
+	//   ARD/VRD/PRD/COD/Crash → 停桨 (Disarm)
+	//   MTO/OBS → 健康则降落，不健康则停桨
+	// 无等级仲裁，动作硬编码，行为可预测。
+
+	// 飞机自身状态健康检查：MTO/OBS 降落动作的安全门槛
+	// （独立于各维度 EN 开关的实时状态确认，见 checkVehicleHealthy()）
+	_locp_vehicle_healthy = checkVehicleHealthy();
 }
 
 bool FailureDetector::checkAttitudeRateAnomaly(const vehicle_angular_velocity_s &ang_vel)
@@ -472,19 +553,26 @@ bool FailureDetector::checkAttitudeRateAnomaly(const vehicle_angular_velocity_s 
 	_pitchspeed_prev = ang_vel.xyz[1];
 	_yawspeed_prev   = ang_vel.xyz[2];
 
-	// 角加速度超限判定：任意轴角加速度 > 对应阈值即触发
-	bool accel_fault = (d_roll  > _param_locp_ard_r_max.get())
-			|| (d_pitch > _param_locp_ard_p_max.get())
-			|| (d_yaw   > _param_locp_ard_y_max.get());
+	// 角加速度超限判定：任意轴角加速度 > 对应阈值即触发（LOCP_ARD_ACC_EN 控制）
+	bool accel_fault = _param_locp_ard_acc_en.get()
+			&& ((d_roll  > _param_locp_ard_r_max.get())
+			    || (d_pitch > _param_locp_ard_p_max.get())
+			    || (d_yaw   > _param_locp_ard_y_max.get()));
 
 	// --- 持续高角速率检测：角速率超过设定值并持续超过设定时间 ---
 	// 仅检测 Roll 和 Pitch（Yaw 通常变化范围大，不作为持续判断条件）
+	// 注意：必须检查 _att_rate_high_start != 0，否则计时器未启动时
+	// (now - 0) 为系统运行时间（巨大），会导致单帧角速率超限即误判。
+	// 由 LOCP_ARD_RATE_EN 控制开关。
 	bool sustained_high =
+		_param_locp_ard_rate_en.get() && (
 		(fabsf(ang_vel.xyz[0]) > _param_locp_ard_rsp.get()
+		 && _att_rate_high_start != 0
 		 && (now - _att_rate_high_start) > static_cast<hrt_abstime>(_param_locp_ard_dur.get() * 1_s))
 		||
 		(fabsf(ang_vel.xyz[1]) > _param_locp_ard_psp.get()
-		 && (now - _att_rate_high_start) > static_cast<hrt_abstime>(_param_locp_ard_dur.get() * 1_s));
+		 && _att_rate_high_start != 0
+		 && (now - _att_rate_high_start) > static_cast<hrt_abstime>(_param_locp_ard_dur.get() * 1_s)));
 
 	// 更新持续高角速率计时器：
 	// 当任意轴角速率超出设定点时开始计时，全部回落到阈值以下时清零
@@ -547,13 +635,14 @@ bool FailureDetector::checkVelocityRateAnomaly(const vehicle_local_position_s &l
 	// --- 水平加速度异常检测 ---
 	// 计算水平面合成加速度 (ax² + ay²) 的平方根，与阈值比较
 	float acc_horiz = sqrtf(loc.ax * loc.ax + loc.ay * loc.ay);
-	bool horiz_fault = acc_horiz > _param_locp_vrd_ah_max.get();
+	bool horiz_fault = _param_locp_vrd_ah_en.get() && (acc_horiz > _param_locp_vrd_ah_max.get());
 
 	// --- 自由落体/动力急降检测 ---
 	// 条件1：垂直加速度 az 超出阈值（向下加速）
 	// 条件2：垂直速度 vz 已经超过阈值（正在快速下降）
-	// 两个条件同时满足才判定为自由落体/急降
-	bool freefall = (loc.az > _param_locp_vrd_ad_max.get())
+	// 两个条件同时满足才判定为自由落体/急降（LOCP_VRD_FF_EN 控制）
+	bool freefall = _param_locp_vrd_ff_en.get()
+		     && (loc.az > _param_locp_vrd_ad_max.get())
 		     && (loc.vz > _param_locp_vrd_vzd_max.get());
 
 	// --- Jerk（加加速度）检测 ---
@@ -564,10 +653,34 @@ bool FailureDetector::checkVelocityRateAnomaly(const vehicle_local_position_s &l
 	if (_acc_horiz_timestamp_prev == 0 || dt <= 0.f || dt > 1.f) { dt = 0.01f; }
 	_acc_horiz_timestamp_prev = loc.timestamp;
 	float jerk = fabsf(acc_horiz - _acc_horiz_prev) / dt;
-	bool jerk_fault = jerk > _param_locp_vrd_jerk.get();
+	bool jerk_fault = _param_locp_vrd_jk_en.get() && (jerk > _param_locp_vrd_jerk.get());
 	_acc_horiz_prev = acc_horiz;
 
-	bool triggered = horiz_fault || freefall || jerk_fault;
+	// --- 水平速度持续检测（温和乱飞） ---
+	// 水平面合成速度超过低阈值（LOCP_VRD_HS_MAX）并持续达到
+	// LOCP_VRD_HS_DUR 秒 → 检测飞控发疯乱飞 / EKF 发散导致的意外漂移。
+	// 标定依据（2026-08-13，6-8 月 136 份纯净日志，已排除地面假速度日志
+	// log_215~219）：正常飞行 P99.9=3.19 m/s（本机最大 10 m/s，阈值 15 满速
+	// 也不触发）；EGO 视觉故障（7-8 月 13 份同源日志）速度 47~107 m/s
+	// 持续 9~330s，可稳定捕获。
+	float horiz_spd = sqrtf(loc.vx * loc.vx + loc.vy * loc.vy);
+	const bool spd_high = horiz_spd > _param_locp_vrd_hs_max.get();
+
+	if (spd_high) {
+		if (_horiz_spd_high_start == 0) {
+			_horiz_spd_high_start = now;
+		}
+
+	} else {
+		_horiz_spd_high_start = 0;
+	}
+
+	const bool spd_fault = _param_locp_vrd_hs_en.get() && spd_high
+			       && (_horiz_spd_high_start != 0)
+			       && (now - _horiz_spd_high_start) >
+			       static_cast<hrt_abstime>(_param_locp_vrd_hs_dur.get() * 1_s);
+
+	bool triggered = horiz_fault || freefall || jerk_fault || spd_fault;
 
 	// 迟滞滤波：故障条件需持续 LOCP_VRD_T 秒
 	_vrd_hysteresis.set_hysteresis_time_from(false,
@@ -587,7 +700,8 @@ bool FailureDetector::checkPositionRateAnomaly(const vehicle_local_position_s &l
 	float alt_drop = loc.z - home.z;
 	// 条件1：垂直速度超过阈值（正在快速下降）
 	// 条件2：高度下降量超过阈值（已经下降了足够多）
-	bool rapid_descent = (loc.vz > _param_locp_prd_vz_max.get())
+	bool rapid_descent = _param_locp_prd_des_en.get()
+			  && (loc.vz > _param_locp_prd_vz_max.get())
 			  && (alt_drop > _param_locp_prd_adrop.get());
 
 	// --- 高度振荡检测（滑动窗口标准差法） ---
@@ -610,12 +724,13 @@ bool FailureDetector::checkPositionRateAnomaly(const vehicle_local_position_s &l
 	variance /= _alt_history_count;
 	float alt_std = sqrtf(variance);
 	// 至少积累 5 帧数据才开始判断，标准差超过阈值即触发
-	bool alt_oscillation = (_alt_history_count >= 5) && (alt_std > _param_locp_prd_astd.get());
+	bool alt_oscillation = _param_locp_prd_osc_en.get()
+			      && (_alt_history_count >= 5) && (alt_std > _param_locp_prd_astd.get());
 
 	// --- 水平漂移检测 ---
 	// 计算水平面合成速度 (vx² + vy²) 的平方根
 	float horiz_spd = sqrtf(loc.vx * loc.vx + loc.vy * loc.vy);
-	bool position_drift = horiz_spd > _param_locp_prd_hspd.get();
+	bool position_drift = _param_locp_prd_drf_en.get() && (horiz_spd > _param_locp_prd_hspd.get());
 
 	bool triggered = rapid_descent || alt_oscillation || position_drift;
 
@@ -627,7 +742,7 @@ bool FailureDetector::checkPositionRateAnomaly(const vehicle_local_position_s &l
 	return _prd_hysteresis.get_state();
 }
 
-bool FailureDetector::checkCurrentAnomaly(const battery_status_s &bat, const esc_status_s &esc)
+bool FailureDetector::checkCurrentAnomaly(const battery_status_s &bat)
 {
 	const hrt_abstime now = hrt_absolute_time();
 
@@ -648,8 +763,9 @@ bool FailureDetector::checkCurrentAnomaly(const battery_status_s &bat, const esc
 	// 条件1：当前电流偏离滑动均值超过阈值（突增）
 	// 条件2：当前电流绝对值超过最大允许值
 	float deviation = bat.current_a - avg;
-	bool total_surge = (deviation > _param_locp_cod_delta_i.get())
-			|| (bat.current_a > _param_locp_cod_max_i.get());
+	bool total_surge = _param_locp_cod_srg_en.get()
+			&& ((deviation > _param_locp_cod_delta_i.get())
+			    || (bat.current_a > _param_locp_cod_max_i.get()));
 
 	// --- 电流变化率 (dI/dt) 尖峰检测 ---
 	// 通过前后两帧电流差分计算 dI/dt (A/s)，检测瞬间电流尖峰
@@ -659,30 +775,10 @@ bool FailureDetector::checkCurrentAnomaly(const battery_status_s &bat, const esc
 	if (_current_timestamp_prev == 0 || dt <= 0.f || dt > 1.f) { dt = 0.01f; }
 	_current_timestamp_prev = bat.timestamp;
 	float di_dt = fabsf(bat.current_a - _current_prev) / dt;
-	bool current_spike = di_dt > _param_locp_cod_di_dt.get();
+	bool current_spike = _param_locp_cod_spk_en.get() && (di_dt > _param_locp_cod_di_dt.get());
 	_current_prev = bat.current_a;
 
-	// --- 单路 ESC 过流检测 ---
-	// 计算各 ESC 平均电流，检测是否有单路 ESC 电流异常偏高
-	int esc_count = esc.esc_count;
-	if (esc_count > 8) { esc_count = 8; }   // 最多支持 8 路 ESC
-	if (esc_count < 1) { esc_count = 1; }   // 至少按 1 路处理，防止除以零
-
-	float esc_avg = 0.f;
-	for (int i = 0; i < esc_count; i++) { esc_avg += esc.esc[i].esc_current; }
-	esc_avg /= esc_count;
-
-	// 判定条件：单路电流 > 均值×2 且 > 绝对阈值
-	bool single_esc_fault = false;
-	for (int i = 0; i < esc_count; i++) {
-		if (esc.esc[i].esc_current > esc_avg * 2.0f
-		    && esc.esc[i].esc_current > _param_locp_cod_esc_max.get()) {
-			single_esc_fault = true;
-			break;
-		}
-	}
-
-	bool triggered = total_surge || current_spike || single_esc_fault;
+	bool triggered = total_surge || current_spike;
 
 	// 迟滞滤波：故障条件需持续 LOCP_COD_T 秒
 	_cod_hysteresis.set_hysteresis_time_from(false,
@@ -690,6 +786,184 @@ bool FailureDetector::checkCurrentAnomaly(const battery_status_s &bat, const esc
 	_cod_hysteresis.set_state_and_update(triggered, now);
 
 	return _cod_hysteresis.get_state();
+}
+
+bool FailureDetector::checkThrustResponse(const vehicle_status_s &vehicle_status)
+{
+	// TRD (Thrust Response Detection) —— 动力响应校验
+	//
+	// 通用检测原则：检测"应相关的指标却互相矛盾"——
+	// 油门指令高（期望大推力），但实际垂直加速度不足（该加速却没加速）。
+	//
+	// 覆盖场景：卡网（顶部/侧边）、动力丢失、桨损坏、控制失效。
+	// 不特指某一故障，只看"高油门 ↔ 运动响应不足"的指标矛盾。
+	//
+	// 垂直加速度说明：使用 EKF 去重力后的运动加速度（vehicle_local_position.az，
+	// NED 向下为正）。正常满油门爬升 az 约 -30 m/s²（大幅向上加速），
+	// 被卡/动力失效时 az 接近 0 或为正。判定"无向上加速"：az > -LOCP_TRD_AZ_MIN。
+	//
+	// 状态机：确认触发后锁存（防空窗，不因单帧恢复而复位），
+	// 仅当连续正常 3s 才复位（避免撞网瞬间乱飞检测复位造成空窗）。
+
+	const hrt_abstime now = hrt_absolute_time();
+
+	// --- 读取当前油门指令（4 电机最大通道） ---
+	actuator_motors_s act;
+	float throttle = 0.f;
+
+	if (_actuator_motors_sub.copy(&act)) {
+		for (int i = 0; i < actuator_motors_s::NUM_CONTROLS; i++) {
+			if (PX4_ISFINITE(act.control[i])) {
+				throttle = math::max(throttle, fabsf(act.control[i]));
+			}
+		}
+	}
+
+	// --- 读取垂直加速度（EKF 去重力）与高度/速度 ---
+	vehicle_local_position_s loc;
+	float az = 0.f;
+	float height = 0.f;
+	float horiz_speed = 0.f;
+	float vz = 0.f;
+
+	if (_vehicle_local_position_sub.copy(&loc)) {
+		az = loc.az;
+		height = -loc.z;   // NED: z 负 = 高处，高度 = -z
+		horiz_speed = sqrtf(loc.vx * loc.vx + loc.vy * loc.vy);
+		vz = loc.vz;
+	}
+
+	// --- 指标矛盾判定：高油门 且 完全无运动响应 ---
+	// 2026-08-13 按日志标定（卡网 log_309/311 vs 正常日志）：
+	//   卡网特征：az≈0（无向上加速）、|vz|≈0（无升降）、水平速度≈0（挂住不动）
+	//   满油门平飞：水平速度大 → 动力正常，不触发
+	//   快速升降：|vz| 大 → 动力正常，不触发
+	//   地面测试：高度≈0 → 排除
+	const bool high_throttle = throttle > _param_locp_trd_thr_high.get();
+	const bool no_upward_accel = az > -_param_locp_trd_az_min.get();   // 无足够向上加速
+	const bool no_vertical_move = fabsf(vz) < _param_locp_trd_vz_max.get();      // 无显著升降
+	const bool no_horiz_move = horiz_speed < _param_locp_trd_hs_max.get();        // 无水平移动
+	const bool above_min_height = height > _param_locp_trd_min_h.get();           // 高于最低检测高度
+	const bool anomaly = high_throttle && no_upward_accel
+			     && no_vertical_move && no_horiz_move && above_min_height;
+
+	// --- 状态机：去抖确认 + 锁存 + 复位 ---
+	if (_locp_trd_triggered) {
+		// 已锁存触发：检查连续正常 3s 复位
+		if (!anomaly) {
+			if (_trd_normal_start == 0) {
+				_trd_normal_start = now;
+
+			} else if (now - _trd_normal_start > 3_s) {
+				// 连续正常 3 秒 → 解除锁存，恢复正常
+				_locp_trd_triggered = false;
+				_trd_normal_start = 0;
+			}
+
+		} else {
+			_trd_normal_start = 0;
+		}
+
+	} else {
+		_trd_normal_start = 0;
+
+		if (anomaly) {
+			// 去抖确认：异常需持续 LOCP_TRD_T 秒
+			if (_trd_high_thr_start == 0) {
+				_trd_high_thr_start = now;
+
+			} else if (now - _trd_high_thr_start > static_cast<hrt_abstime>(_param_locp_trd_t.get() * 1_s)) {
+				_locp_trd_triggered = true;   // 确认触发（锁存）
+				_trd_high_thr_start = 0;
+			}
+
+		} else {
+			_trd_high_thr_start = 0;
+		}
+	}
+
+	// --- 分级动作决策 ---
+	// ≤LOCP_TRD_LAND_H：请求降落（柔和），并跟踪降落尝试时间；
+	//   >LOCP_TRD_LTOUT 仍触发（被网吊住降不下来）→ 转停桨（兜底）
+	// >LOCP_TRD_LAND_H 或已抛飞：直接停桨
+	if (_locp_trd_triggered) {
+		if (height <= _param_locp_trd_land_h.get()) {
+			// 低高度：请求降落，记录降落尝试开始时刻
+			if (_trd_land_try_start == 0) {
+				_trd_land_try_start = now;
+			}
+
+			_locp_trd_land = true;
+
+			// 降落尝试超时仍触发（被网吊住）→ 转停桨
+			if (_trd_land_try_start != 0
+			    && (now - _trd_land_try_start) > static_cast<hrt_abstime>(_param_locp_trd_land_tout.get() * 1_s)) {
+				_locp_trd_land = false;
+			}
+
+		} else {
+			// 高高度 / 抛飞：直接停桨
+			_trd_land_try_start = 0;
+			_locp_trd_land = false;
+		}
+
+	} else {
+		_trd_land_try_start = 0;
+		_locp_trd_land = false;
+	}
+
+	// --- 接管状态：RC + QGC 双通道 + 接管观察窗口（接管无效检测） ---
+	// 追踪最近 QGC 指令（vehicle_command），2 秒内有指令视为地面站在线
+	vehicle_command_s cmd;
+
+	while (_vehicle_command_sub.update(&cmd)) {
+		_last_gcs_cmd = cmd.timestamp;
+	}
+
+	// RC 可用性：PX4 v1.17 的 vehicle_status 无 rc_signal_lost 字段，
+	// 改用话题新鲜度判断——RC 输入经 Sticks 处理后发布 manual_control_setpoint
+	// （约 50Hz 持续更新），RC 失联时该话题停止更新，1s 内无新数据视为失联。
+	manual_control_setpoint_s mcs;
+
+	if (_manual_control_setpoint_sub.update(&mcs)) {
+		_last_rc_input = mcs.timestamp;
+	}
+
+	const bool rc_available = (_last_rc_input != 0) && (now - _last_rc_input) < 1_s;
+	const bool gcs_active = (now - _last_gcs_cmd) < 2_s;
+	const bool takeover_available = rc_available || gcs_active;
+
+	if (_locp_trd_triggered) {
+		if (takeover_available) {
+			// 有人可接管（RC 在线 或 QGC 有指令）→ 观察窗口
+			if (anomaly) {
+				// 异常持续（仍高油门无响应）→ 观察窗口计时
+				if (_trd_takeover_watch_start == 0) {
+					_trd_takeover_watch_start = now;
+				}
+
+				// 观察窗口到期仍无响应 → 接管无效（真失控）→ 强制停桨
+				_locp_trd_no_takeover = (now - _trd_takeover_watch_start)
+							> static_cast<hrt_abstime>(_param_locp_trd_to_watch.get() * 1_s);
+
+			} else {
+				// 已恢复正常（用户接管成功，动力恢复）→ 清零窗口，等待锁存复位
+				_trd_takeover_watch_start = 0;
+				_locp_trd_no_takeover = false;
+			}
+
+		} else {
+			// 无人可接管（RC 失联 且 QGC 无指令）→ 立即强制停桨
+			_locp_trd_no_takeover = true;
+			_trd_takeover_watch_start = 0;
+		}
+
+	} else {
+		_locp_trd_no_takeover = false;
+		_trd_takeover_watch_start = 0;
+	}
+
+	return _locp_trd_triggered;
 }
 
 bool FailureDetector::checkMavlinkTimeout()
@@ -711,12 +985,14 @@ bool FailureDetector::checkMavlinkTimeout()
 	}
 
 	// 心跳超时判定：距离最后一次心跳超过 LOCP_MTO_HB_T 秒
-	bool heartbeat_lost = (_last_mavlink_heartbeat != 0)
+	bool heartbeat_lost = _param_locp_mto_hb_en.get()
+		&& (_last_mavlink_heartbeat != 0)
 		&& (now - _last_mavlink_heartbeat >
 		    static_cast<hrt_abstime>(_param_locp_mto_hb_t.get() * 1_s));
 
 	// 指令超时判定：距离最后一次指令超过 LOCP_MTO_CMD_T 秒
-	bool cmd_timeout = (_last_vehicle_command != 0)
+	bool cmd_timeout = _param_locp_mto_cmd_en.get()
+		&& (_last_vehicle_command != 0)
 		&& (now - _last_vehicle_command >
 		    static_cast<hrt_abstime>(_param_locp_mto_cmd_t.get() * 1_s));
 
@@ -743,56 +1019,72 @@ bool FailureDetector::checkMavlinkTimeout()
 	return heartbeat_lost || (cmd_timeout && rate_drop);
 }
 
-uint8_t FailureDetector::evaluateLOCPSeverity()
+bool FailureDetector::checkVehicleHealthy()
 {
-	// 统计当前触发的检测维度数量
-	int count = (_locp_ard_triggered ? 1 : 0)
-		    + (_locp_vrd_triggered ? 1 : 0)
-		    + (_locp_prd_triggered ? 1 : 0)
-		    + (_locp_cod_triggered ? 1 : 0)
-		    + (_locp_mto_triggered ? 1 : 0)
-		    + (_locp_obs_triggered ? 1 : 0);
-
-	// ============================================================
-	// 数据源相关性折扣 (Correlation Discount)
-	// ============================================================
-	// VRD (速度变化率) 和 PRD (位置变化率) 共用同一个 EKF 估计数据源
-	// (vehicle_local_position)。如果 EKF 因 GPS/光流等外部源异常而发散，
-	// VRD 和 PRD 会【同时】触发 —— 但这并非真正的双重故障证据，
-	// 而是单一 EKF 数据源问题的连锁反应。
+	// 飞机自身状态健康检查 —— MTO/OBS 降落动作的安全门槛
 	//
-	// 因此：当 VRD 和 PRD 同时触发时，按 1 个维度计算（折半），
-	// 防止 EKF 源问题被误判为 LEVEL_2/3 并触发激进的 Disarm。
-	if (_locp_vrd_triggered && _locp_prd_triggered) {
-		count -= 1;
+	// 降落是"受控动作"：依赖正常的位置/姿态控制回路。仅当飞机自身
+	// 状态正常时才允许执行降落；否则即使只有 MTO/OBS（外部输入异常）
+	// 触发，也必须直接停桨。
+	//
+	// 为什么需要独立检查（而非直接依赖 ARD/VRD 等触发标志）：
+	//   1. 各检测维度可能被用户禁用（EN=0），此时失控不会被标志位反映；
+	//   2. 失控可能尚未达到维度的"持续确认"阈值（迟滞/DUR 未满）。
+	// 因此本检查是【不受 EN 开关控制的实时状态确认】。
+	//
+	// 判定规则（任一项异常 → 不健康，门槛使用独立参数 LOCP_HC_*）：
+	//   - 角速率异常：|ω_r/p| > LOCP_HC_RATE_MAX 或 |ω_yaw| > LOCP_HC_YAW_MAX
+	//   - 水平速度异常：√(vx²+vy²) > LOCP_HC_HS_MAX（EGO 视觉故障等）
+	//   - 垂直下降异常：vz > LOCP_HC_VZ_MAX（急坠）
+	// 数据无效或 NaN 时视为不健康（保守：无法确认受控 → 停桨）。
+	// 标定（2026-08-13，6-8 月 136 份纯净日志）：
+	//   R/P 角速率 P99.9=1.13 → 阈值 2（裕度 1.8 倍）；
+	//   Yaw 角速率 P99.9=1.38 → 阈值 5（正常旋转可达 3.14，裕度 3.6 倍）；
+	//   水平速度 P99.9=3.19（已排除地面假速度日志）→ 阈值 15（裕度 4.7 倍）；
+	//   |vz| P99.9=1.04 → 阈值 10（裕度约 5 倍）。
+
+	bool healthy = true;
+
+	// 1) 角速率健康检查（IMU 角速度）
+	//    门槛使用独立参数 LOCP_HC_*（不复用 ARD_RSP/PSP/YSP，
+	//    避免调整 ARD 检测阈值时间接改变健康门槛）
+	vehicle_angular_velocity_s ang_vel;
+	if (_vehicle_angular_velocity_sub.copy(&ang_vel)) {
+		if (!PX4_ISFINITE(ang_vel.xyz[0]) || !PX4_ISFINITE(ang_vel.xyz[1]) || !PX4_ISFINITE(ang_vel.xyz[2])) {
+			healthy = false;  // 角速度数据异常（NaN）
+
+		} else if (fabsf(ang_vel.xyz[0]) > _param_locp_hc_rate_max.get()
+			   || fabsf(ang_vel.xyz[1]) > _param_locp_hc_rate_max.get()
+			   || fabsf(ang_vel.xyz[2]) > _param_locp_hc_yaw_max.get()) {
+			healthy = false;  // 角速率超限（飞机在乱飞）
+		}
+
+	} else {
+		healthy = false;  // 角速度数据不可用 → 保守判定不健康
 	}
 
-	// 致命组合：电流异常 + 姿态异常同时触发（暗示动力系统严重故障）
-	// 这两个维度来自独立的数据源（电池电流 + IMU 角速度），
-	// 同时触发是真实的动力系统故障证据，不做折扣。
-	bool fatal_combo = _locp_cod_triggered && _locp_ard_triggered;
+	// 2) 速度健康检查（EKF 位置/速度）
+	//    门槛使用独立参数 LOCP_HC_*（不复用 VRD_HS_MAX/PRD_VZ_MAX）
+	vehicle_local_position_s loc;
+	if (_vehicle_local_position_sub.copy(&loc)) {
+		if (!PX4_ISFINITE(loc.vx) || !PX4_ISFINITE(loc.vy) || !PX4_ISFINITE(loc.vz)) {
+			healthy = false;  // 速度数据异常（NaN，如 EGO 视觉故障）
 
-	// 通信中断且有【其他（非 MTO 自身）】异常：
-	// MAVLink 链路死亡 + 至少一种传感器异常 → 升级为 LEVEL_2
-	// 注意：这里的 count 已排除 MTO 自身，避免"仅 MTO 触发"被误升为 LEVEL_2
-	int count_excl_mto = count - (_locp_mto_triggered ? 1 : 0);
-	bool comm_dead = _locp_mto_triggered && (count_excl_mto >= 1);
+		} else {
+			const float horiz_spd = sqrtf(loc.vx * loc.vx + loc.vy * loc.vy);
+			if (horiz_spd > _param_locp_hc_hs_max.get()) {
+				healthy = false;  // 水平速度异常（EGO 故障等）
+			}
+			if (loc.vz > _param_locp_hc_vz_max.get()) {
+				healthy = false;  // 垂直下降速度异常（急坠）
+			}
+		}
 
-	// 严重等级仲裁规则：
-	// LEVEL_3：3+ 维度触发 或 电流+姿态致命组合 → 立即终止飞行
-	// LEVEL_2：2 个维度触发 或 通信中断+其他异常 → 紧急降落
-	// LEVEL_1：1 个维度触发                       → 常规降落
-	// NONE：   未触发任何维度                     → 正常
-	if (count >= 3 || fatal_combo) {
-		return 3; // LEVEL_3: 终止飞行（Terminate）
+	} else {
+		healthy = false;  // 位置/速度数据不可用 → 保守判定不健康
 	}
-	if (count >= 2 || comm_dead) {
-		return 2; // LEVEL_2: 紧急降落（Descend）
-	}
-	if (count >= 1) {
-		return 1; // LEVEL_1: 常规降落（Land）
-	}
-	return 0; // NONE: 正常飞行
+
+	return healthy;
 }
 
 bool FailureDetector::checkOffboardSetpointSanity()
@@ -833,40 +1125,44 @@ bool FailureDetector::checkOffboardSetpointSanity()
 	bool yaw_valid = PX4_ISFINITE(sp.yaw);
 
 	if (_sp_was_valid) {
-		// --- 1) NaN 注入检测：上一帧有效 → 当前帧突变为 NaN ---
-		for (int i = 0; i < 3; i++) {
-			if (PX4_ISFINITE(_sp_pos_prev[i]) && !pos_valid[i]) {
-				anomaly = true;  // 位置 setpoint 突变为 NaN
+		// --- 1) NaN 注入检测：上一帧有效 → 当前帧突变为 NaN（LOCP_OBS_NAN_EN 控制）---
+		if (_param_locp_obs_nan_en.get()) {
+			for (int i = 0; i < 3; i++) {
+				if (PX4_ISFINITE(_sp_pos_prev[i]) && !pos_valid[i]) {
+					anomaly = true;  // 位置 setpoint 突变为 NaN
+				}
+				if (PX4_ISFINITE(_sp_vel_prev[i]) && !vel_valid[i]) {
+					anomaly = true;  // 速度 setpoint 突变为 NaN
+				}
 			}
-			if (PX4_ISFINITE(_sp_vel_prev[i]) && !vel_valid[i]) {
-				anomaly = true;  // 速度 setpoint 突变为 NaN
+			if (PX4_ISFINITE(_sp_yaw_prev) && !yaw_valid) {
+				anomaly = true;      // Yaw setpoint 突变为 NaN
 			}
-		}
-		if (PX4_ISFINITE(_sp_yaw_prev) && !yaw_valid) {
-			anomaly = true;      // Yaw setpoint 突变为 NaN
 		}
 
-		// --- 2) 数值跳变检测：相邻帧间变化超过阈值 ---
-		for (int i = 0; i < 3; i++) {
-			if (PX4_ISFINITE(_sp_pos_prev[i]) && pos_valid[i]) {
-				if (fabsf(sp.position[i] - _sp_pos_prev[i]) > _param_locp_obs_jump_pos.get()) {
-					anomaly = true;  // 位置跳变
+		// --- 2) 数值跳变检测：相邻帧间变化超过阈值（LOCP_OBS_JMP_EN 控制）---
+		if (_param_locp_obs_jmp_en.get()) {
+			for (int i = 0; i < 3; i++) {
+				if (PX4_ISFINITE(_sp_pos_prev[i]) && pos_valid[i]) {
+					if (fabsf(sp.position[i] - _sp_pos_prev[i]) > _param_locp_obs_jump_pos.get()) {
+						anomaly = true;  // 位置跳变
+					}
+				}
+				if (PX4_ISFINITE(_sp_vel_prev[i]) && vel_valid[i]) {
+					if (fabsf(sp.velocity[i] - _sp_vel_prev[i]) > _param_locp_obs_jump_vel.get()) {
+						anomaly = true;  // 速度跳变
+					}
 				}
 			}
-			if (PX4_ISFINITE(_sp_vel_prev[i]) && vel_valid[i]) {
-				if (fabsf(sp.velocity[i] - _sp_vel_prev[i]) > _param_locp_obs_jump_vel.get()) {
-					anomaly = true;  // 速度跳变
+			if (PX4_ISFINITE(_sp_yaw_prev) && yaw_valid) {
+				// Yaw 跳变需要处理 ±PI 环绕
+				float yaw_diff = fabsf(sp.yaw - _sp_yaw_prev);
+				if (yaw_diff > M_PI_F) {
+					yaw_diff = 2.0f * M_PI_F - yaw_diff;
 				}
-			}
-		}
-		if (PX4_ISFINITE(_sp_yaw_prev) && yaw_valid) {
-			// Yaw 跳变需要处理 ±PI 环绕
-			float yaw_diff = fabsf(sp.yaw - _sp_yaw_prev);
-			if (yaw_diff > M_PI_F) {
-				yaw_diff = 2.0f * M_PI_F - yaw_diff;
-			}
-			if (yaw_diff > _param_locp_obs_jump_yaw.get()) {
-				anomaly = true;
+				if (yaw_diff > _param_locp_obs_jump_yaw.get()) {
+					anomaly = true;
+				}
 			}
 		}
 	}

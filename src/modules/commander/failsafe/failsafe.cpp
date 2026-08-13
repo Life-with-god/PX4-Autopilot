@@ -442,70 +442,6 @@ FailsafeBase::ActionOptions Failsafe::fromRemainingFlightTimeLowActParam(int par
 	return options;
 }
 
-// ============================================================
-// LOCP 动作参数映射：将参数值转换为 failsafe 动作选项
-// ============================================================
-// LOCP 是安全关键功能，因此所有动作均不允许用户接管 (allow_user_takeover = Never)
-// 清除条件根据动作类型不同：
-//   - None/Warning: 无清除条件
-//   - Hold_mode:     模式变更或上锁后清除
-//   - Land/Descend/RTL: 上锁后清除
-//   - Terminate/Disarm: 永不自动清除
-// ============================================================
-FailsafeBase::ActionOptions Failsafe::fromLOCPActParam(int param_value)
-{
-	ActionOptions options{};
-	// LOCP 是安全关键保护：绝不允许用户接管
-	options.allow_user_takeover = UserTakeoverAllowed::Never;
-
-	switch (locp_failsafe_action(param_value)) {
-	case locp_failsafe_action::None:
-		options.action = Action::None;
-		break;
-
-	case locp_failsafe_action::Warning:
-		options.action = Action::Warn;
-		break;
-
-	case locp_failsafe_action::Hold_mode:
-		options.action = Action::Hold;
-		options.clear_condition = ClearCondition::OnModeChangeOrDisarm;
-		break;
-
-	case locp_failsafe_action::Land_mode:
-		options.action = Action::Land;
-		options.clear_condition = ClearCondition::OnDisarm;
-		break;
-
-	case locp_failsafe_action::Descend_mode:
-		options.action = Action::Descend;
-		options.clear_condition = ClearCondition::OnDisarm;
-		break;
-
-	case locp_failsafe_action::RTL_mode:
-		options.action = Action::RTL;
-		options.clear_condition = ClearCondition::OnDisarm;
-		break;
-
-	case locp_failsafe_action::Terminate:
-		options.action = Action::Terminate;
-		options.clear_condition = ClearCondition::Never;
-		break;
-
-	case locp_failsafe_action::Disarm:
-		options.action = Action::Disarm;
-		options.clear_condition = ClearCondition::Never;
-		break;
-
-	default:
-		options.action = Action::Land;
-		options.clear_condition = ClearCondition::OnDisarm;
-		break;
-	}
-
-	return options;
-}
-
 void Failsafe::checkStateAndMode(const hrt_abstime &time_us, const State &state,
 				 const failsafe_flags_s &status_flags)
 {
@@ -699,33 +635,74 @@ void Failsafe::checkStateAndMode(const hrt_abstime &time_us, const State &state,
 	// ============================================================
 	// LOCP (Loss-of-Control Protection) 失控保护
 	// ============================================================
-	// 根据 FailureDetector 综合评估的严重等级（0~3），
-	// 触发对应级别的安全动作。动作类型由参数 LOCP_L1_ACT/L2_ACT/L3_ACT 配置。
-	// 碰撞/撞击检测是独立的瞬时通道，触发后立即上锁。
+	// 各检测维度触发后按固定动作执行（无等级参数，行为可预测）：
+	//   停桨 (Disarm): ARD / VRD / PRD / COD / Crash —— 飞机自身已失控，
+	//                  控制回路不可信，"降落"无法可靠执行，直接停桨。
+	//   降落 (Land):   MTO / OBS —— 飞机自身正常，仅外部输入（链路/机载
+	//                  指令）异常，控制仍可信，可安全降落。
 	// ============================================================
 
-	// LEVEL_1: 轻度异常 → 按 LOCP_L1_ACT 配置执行（默认降落）
-	CHECK_FAILSAFE(status_flags, locp_level1,
-		       fromLOCPActParam(_param_locp_l1_act.get()));
+	// ARD: 姿态变化率异常 → 飞机已乱飞，直接停桨（不可延迟，不允许接管）
+	CHECK_FAILSAFE(status_flags, locp_ard_triggered,
+		       ActionOptions(Action::Disarm).cannotBeDeferred().allowUserTakeover(UserTakeoverAllowed::Never));
 
-	// LEVEL_2: 中度异常 → 按 LOCP_L2_ACT 配置执行（默认紧急降落）
-	CHECK_FAILSAFE(status_flags, locp_level2,
-		       fromLOCPActParam(_param_locp_l2_act.get()));
+	// VRD: 速度变化率异常 → 速度估计/实际失控，停桨（不可延迟，不允许接管）
+	CHECK_FAILSAFE(status_flags, locp_vrd_triggered,
+		       ActionOptions(Action::Disarm).cannotBeDeferred().allowUserTakeover(UserTakeoverAllowed::Never));
 
-	// LEVEL_3: 严重异常 → 按 LOCP_L3_ACT 配置执行（默认终止飞行）
-	CHECK_FAILSAFE(status_flags, locp_level3,
-		       fromLOCPActParam(_param_locp_l3_act.get()));
+	// PRD: 位置变化率异常 → 位置估计坏，停桨（不可延迟，不允许接管）
+	CHECK_FAILSAFE(status_flags, locp_prd_triggered,
+		       ActionOptions(Action::Disarm).cannotBeDeferred().allowUserTakeover(UserTakeoverAllowed::Never));
+
+	// COD: 电流异常 → 动力系统异常，停桨（不可延迟，不允许接管）
+	CHECK_FAILSAFE(status_flags, locp_cod_triggered,
+		       ActionOptions(Action::Disarm).cannotBeDeferred().allowUserTakeover(UserTakeoverAllowed::Never));
 
 	// 碰撞/撞击瞬时检测 → 立即上锁，不可延迟，不允许用户接管
 	CHECK_FAILSAFE(status_flags, crash_detected,
 		       ActionOptions(Action::Disarm).cannotBeDeferred().allowUserTakeover(UserTakeoverAllowed::Never));
 
-	// OBS: Offboard Setpoint 异常检测 → 按 LOCP_OBS_ACT 配置执行
-	// OBS 检测到 setpoint 数值跳变/NaN 注入，说明机载计算机软件异常。
-	// 动作由 LOCP_OBS_ACT 独立配置（默认降落 Land），避免单次 setpoint
-	// 异常触发过于激进的 Disarm。不允许用户接管。
-	CHECK_FAILSAFE(status_flags, locp_obs_triggered,
-		       fromLOCPActParam(_param_locp_obs_act.get()));
+	// TRD: 动力响应异常（高油门但垂直加速度不足，卡网/动力丢失/桨损坏）
+	// 分级动作（含接管观察窗口）：
+	//   - 接管不可用/无效（RC失联 且 QGC无指令，或接管观察窗口到期仍无响应）
+	//     → 立即停桨，不允许接管
+	//   - 低高度（≤LOCP_TRD_LAND_H）→ 尝试柔和降落（允许用户接管，
+	//     观察窗口内用户接管成功则放行，到期仍无响应转强制停桨）
+	//   - 高高度/抛飞 → 直接停桨（允许用户接管）
+	if (status_flags.locp_trd_no_takeover) {
+		CHECK_FAILSAFE(status_flags, locp_trd_triggered,
+			       ActionOptions(Action::Disarm).cannotBeDeferred().allowUserTakeover(UserTakeoverAllowed::Never));
+
+	} else if (status_flags.locp_trd_land) {
+		CHECK_FAILSAFE(status_flags, locp_trd_triggered, Action::Land);
+
+	} else {
+		CHECK_FAILSAFE(status_flags, locp_trd_triggered,
+			       ActionOptions(Action::Disarm).allowUserTakeover(UserTakeoverAllowed::Always));
+	}
+
+	// MTO/OBS 降落动作的安全门槛：飞机自身必须受控
+	//   MTO/OBS 触发 且 飞机健康（locp_vehicle_healthy）→ 降落（可安全受控落地）
+	//   MTO/OBS 触发 且 飞机不健康 → 停桨（降落会变成坠机）
+	// 健康检查不受各维度 EN 开关控制，补齐"维度被禁用/未达阈值但实际失控"的盲区
+	// 注意：CHECK_FAILSAFE 宏只接受字段名，此处需要复合条件，故直接调用 checkFailsafe()
+	const bool locp_land_safe = status_flags.locp_vehicle_healthy;
+
+	// OBS: Offboard Setpoint 异常 → 飞机健康则降落，不健康则停桨
+	_last_state_locp_obs_land = checkFailsafe(_caller_id_locp_obs_land, _last_state_locp_obs_land,
+			status_flags.locp_obs_triggered && locp_land_safe,
+			ActionOptions(Action::Land));
+	_last_state_locp_obs_disarm = checkFailsafe(_caller_id_locp_obs_disarm, _last_state_locp_obs_disarm,
+			status_flags.locp_obs_triggered && !locp_land_safe,
+			ActionOptions(Action::Disarm).cannotBeDeferred().allowUserTakeover(UserTakeoverAllowed::Never));
+
+	// MTO: MAVLink 通信超时 → 飞机健康则降落，不健康则停桨
+	_last_state_locp_mto_land = checkFailsafe(_caller_id_locp_mto_land, _last_state_locp_mto_land,
+			status_flags.locp_mto_triggered && locp_land_safe,
+			ActionOptions(Action::Land));
+	_last_state_locp_mto_disarm = checkFailsafe(_caller_id_locp_mto_disarm, _last_state_locp_mto_disarm,
+			status_flags.locp_mto_triggered && !locp_land_safe,
+			ActionOptions(Action::Disarm).cannotBeDeferred().allowUserTakeover(UserTakeoverAllowed::Never));
 
 
 

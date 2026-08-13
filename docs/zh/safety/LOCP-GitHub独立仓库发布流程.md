@@ -2,7 +2,7 @@
 
 > **目标**: 将自定义 LOCP（Loss-of-Control Protection）安全机制的文档、代码补丁发布到 GitHub **独立仓库**
 > **为什么独立仓库**: LOCP 是 PX4 上游之外的自定义功能，不应直接推送到 `PX4/PX4-Autopilot` 上游，独立仓库便于版本管理和团队协作
-> **文档日期**: 2026-08-03
+> **文档日期**: 2026-08-13
 
 ---
 
@@ -50,7 +50,7 @@ graph TB
 
 ### 2.1 仓库名称
 
-推荐名称：**`px4-locp`**（PX4 Loss-of-Control Protection）
+仓库名称：**`px4-locp`**（PX4 Loss-of-Control Protection）
 
 ### 2.2 仓库目录结构
 
@@ -167,7 +167,7 @@ ssh -T git@github.com
 # 应输出: Hi <username>! You've successfully authenticated...
 ```
 
-### 3.3 安装 gh CLI（可选，推荐）
+### 3.3 安装 gh CLI（可选）
 
 gh CLI 可以命令行创建仓库，比网页操作更快。
 
@@ -200,7 +200,7 @@ gh auth login
    - **Initialize this repository with**: 勾选 `Add a README file`（可选）
 3. 点击 **Create repository**
 
-### 4.2 方式 B：gh CLI 创建（推荐给开发者）
+### 4.2 方式 B：gh CLI 创建
 
 ```bash
 # 创建私有仓库（带 README 和 BSD-3-Clause 许可证）
@@ -726,5 +726,5 @@ gh release create v1.16.0-locp locp-v1.16.0.tar.gz --title "LOCP v1.16.0"
 ---
 
 > **文档维护者**: LOCP 开发团队
-> **更新日期**: 2026-08-03
+> **更新日期**: 2026-08-13
 > **关联文档**: [LOCP-失控保护系统说明文档.md](LOCP-失控保护系统说明文档.md)、[版本升级标准化适配流程.md](版本升级标准化适配流程.md)

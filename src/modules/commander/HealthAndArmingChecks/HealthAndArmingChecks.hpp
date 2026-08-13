@@ -111,8 +111,8 @@ public:
 	 *
 	 * Commander 通过此接口直接写入 LOCP 检测结果：
 	 *   locp_ard_triggered / locp_vrd_triggered / locp_prd_triggered /
-	 *   locp_cod_triggered / locp_mto_triggered / locp_severity /
-	 *   locp_level1~3 / crash_detected
+	 *   locp_cod_triggered / locp_mto_triggered / locp_obs_triggered /
+	 *   locp_trd_triggered / crash_detected
 	 * 写入后由 failsafe 状态机在下一周期评估并触发保护动作。
 	 */
 	const failsafe_flags_s &failsafeFlags() const { return _failsafe_flags; }
